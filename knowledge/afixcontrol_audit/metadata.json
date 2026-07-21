@@ -1,0 +1,5 @@
+{
+  "summary": "Diretrizes e Resultados da Auditoria Técnica Profunda AfixControl. Contém o mapeamento de 44 pontos de chamada de DetalhesCliente(), catálogo de 31 APIs consumidas da Gestio, análise de riscos de perda de dados fiscais (contato financeiro não persistido localmente) e mapeamento das dependências síncronas bloqueantes em propostas, pedidos e NFe para a arquitetura Local-First.",
+  "timestamps": "2026-06-10T13:10:00Z",
+  "references": ["Auditoria Técnica AfixControl", "Mapeamento Local-First AfixControl"]
+}

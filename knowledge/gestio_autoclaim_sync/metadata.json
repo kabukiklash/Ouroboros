@@ -1,0 +1,8 @@
+{
+    "summary": "Padrão de Autocura (Claim-on-Conflict) para a Fila de Sincronização e Regras de Rate-Limiting. Descreve como tratar erros 400 da Gestio (CNPJ já cadastrado) puxando o ID oficial e atualizando em cascata (clientes, propostas e fila) para destravar a esteira, além do uso de sleep() para prevenir Timeouts/ConnectException no Guzzle.",
+    "created_at": "2026-07-08T02:25:00Z",
+    "references": [
+        "app/cron/processar_fila_sincronizacao.php",
+        "app/classes/otkweb.php"
+    ]
+}

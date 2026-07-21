@@ -1,0 +1,13 @@
+﻿node_modules/
+*.exe
+*.dll
+*.so
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+.DS_Store
+.env
+dist/
+build/
+coverage/

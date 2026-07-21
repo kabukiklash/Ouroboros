@@ -1,0 +1,5 @@
+{
+    "Summary": "Aprendizados sobre a migração de RNC. Detalha que os commits de RNC dependem de uma coluna produtos_selecionados em nao_conformidades e pedido_retrabalho em pedidos. Sempre audite as requisições AJAX do backend para descobrir colunas ocultas no INSERT que não foram listadas em scripts SQL.",
+    "Timestamp": "2026-06-29",
+    "References": ["app/ajax/rnc.php", "app/prodsis/database.sql"]
+}

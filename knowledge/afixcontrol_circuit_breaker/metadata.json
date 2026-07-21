@@ -1,0 +1,9 @@
+{
+  "summary": "Arquitetura e Regras de Circuit Breaker para a plataforma AfixControl. Detalha porque e como os timeouts devem ser curtos (8s) em operacoes de leitura (GET) na OtkWeb (Gestio) e RDStation, e longos em operacoes de escrita (POST/PUT), para evitar paralisias no servidor single-thread e impedir duplicacao de transacoes fiscais e de banco.",
+  "timestamp": "2026-06-13T23:57:00Z",
+  "references": [
+    "app/classes/otkweb.php",
+    "app/classes/rdstation.php",
+    "app/ajax/propostas.php"
+  ]
+}

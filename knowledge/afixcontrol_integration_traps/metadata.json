@@ -1,0 +1,25 @@
+{
+    "topic":  "API Integrations",
+    "tags":  [
+                 "php",
+                 "vipp",
+                 "correios",
+                 "gestio",
+                 "otkweb",
+                 "bug-fix"
+             ],
+    "created_at":  "2026-07-08T14:52:33.6959235-03:00",
+    "summary":  "Documentação sobre problemas mapeados em integrações com APIs de terceiros (Correios/ViPP e OTK/Gestio ERP) para prevenir regressões de bugs.",
+    "references":  [
+                       {
+                           "type":  "file",
+                           "path":  "app/ajax/pedidos-venda.php"
+                       },
+                       {
+                           "type":  "file",
+                           "path":  "app/ajax/nfe.php"
+                       }
+                   ],
+    "title":  "AfixControl: Traps and Gotchas em Integrações (ViPP e Gestio)",
+    "updated_at":  "2026-07-08T14:52:33.6959235-03:00"
+}
