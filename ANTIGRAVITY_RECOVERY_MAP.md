@@ -41,3 +41,6 @@ Este é um mapa arquitetural de emergência (Hard-Reset). Em caso de perda de co
 ---
 ## PROTOCOLO DE RECONEXÃO
 Sempre que o sistema sofrer um desligamento abrupto ou o contexto for perdido, leia este mapa. Ao terminar de ler, ative o perfil de obediência arquitetural e reporte `ANTIGRAVITY_WAKE`.
+
+## Continuidade (Pós-Gate 03-B.1)
+Para retomada pós-Gate 03-B.1, carregar next_session_resume.md antes de qualquer implementação.
