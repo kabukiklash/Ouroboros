@@ -81,6 +81,23 @@ func initDB() {
 		last_deleted_id INTEGER,
 		last_deleted_hash TEXT
 	)`)
+
+	db.Exec(`CREATE TABLE IF NOT EXISTS relational_shadow_evaluations (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		snapshot_id INTEGER NOT NULL,
+		service_id TEXT NOT NULL,
+		snapshot_hash TEXT NOT NULL,
+		formula_version TEXT NOT NULL,
+		absolute_pressure REAL NOT NULL,
+		absolute_pressure_level TEXT NOT NULL,
+		relational_shock REAL NOT NULL,
+		relational_shock_level TEXT NOT NULL,
+		directional_drift REAL NOT NULL,
+		fault_signal TEXT NOT NULL,
+		memory_confidence TEXT NOT NULL,
+		experimental_interpretation TEXT NOT NULL,
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+	)`)
 	
 	setAlpha("INTERNAL_KERNEL", 5.0)
 }
@@ -165,15 +182,49 @@ func insertSnapshot(state RelationalState) {
 		schemaVersion := 1
 		currHash := generateHash(state, ph, schemaVersion)
 
-		_, err := db.Exec(`INSERT INTO relational_snapshots 
+		res, err := db.Exec(`INSERT INTO relational_snapshots 
 		(service_id, observed_at_ms, latency_ms, sample_ok, error_kind, entropy_source, entropy, density, ck_score, alpha_at_time, divergence, friction, state, action_taken, reason_json, relations_json, impact_json, schema_version, previous_hash, current_hash) 
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			state.ServiceID, state.ObservedAtMs, state.LatencyMs, state.SampleOk, state.ErrorKind, state.EntropySource, state.Entropy, state.Density, state.CkScore, state.AlphaAtTime, state.Divergence, state.Friction, state.State, state.ActionTaken, state.ReasonJSON, "{}", "{}", schemaVersion, ph, currHash)
 
 		if err != nil {
 			log.Println("Gate 01 - Falha best-effort ao inserir snapshot:", err)
+			return
+		}
+
+		lastId, errId := res.LastInsertId()
+		if errId == nil {
+			go executeShadowEvaluation(state, lastId, currHash)
 		}
 	}()
+}
+
+func executeShadowEvaluation(state RelationalState, snapshotID int64, currHash string) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Println("Gate 03-A - Panic recuperado na avaliacao shadow:", r)
+		}
+	}()
+
+	var sampleCount int
+	dbMutex.Lock()
+	db.QueryRow(`SELECT count(*) FROM relational_snapshots WHERE service_id = ?`, state.ServiceID).Scan(&sampleCount)
+	dbMutex.Unlock()
+
+	eval := evaluateRelationalShadow_v01(state, snapshotID, sampleCount)
+	eval.SnapshotHash = currHash
+
+	dbMutex.Lock()
+	defer dbMutex.Unlock()
+
+	_, err := db.Exec(`INSERT INTO relational_shadow_evaluations 
+		(snapshot_id, service_id, snapshot_hash, formula_version, absolute_pressure, absolute_pressure_level, relational_shock, relational_shock_level, directional_drift, fault_signal, memory_confidence, experimental_interpretation)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		eval.SnapshotID, eval.ServiceID, eval.SnapshotHash, eval.FormulaVersion, eval.AbsolutePressure, eval.AbsolutePressureLevel, eval.RelationalShock, eval.RelationalShockLevel, eval.DirectionalDrift, eval.FaultSignal, eval.MemoryConfidence, eval.ExperimentalInterpretation)
+
+	if err != nil {
+		log.Println("Gate 03-A - Falha ao inserir shadow evaluation:", err)
+	}
 }
 
 func getAlpha(id string) float64 {

@@ -3,6 +3,7 @@ package main
 import (
 	"math"
 	"testing"
+	"time"
 )
 
 func approxEqual(a, b, tolerance float64) bool {
@@ -74,4 +75,20 @@ func TestShadowEvaluator_GoldenVectors(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestShadowDBIntegration(t *testing.T) {
+	initDB()
+	
+	// Generate 3 test cases to trigger the shadow evaluator logic and insert into DB
+	s1 := calculateLocalRelationalState("SERVICE_FAST_NORMAL_TEST", 500.0, 1, "", "REAL", 100.0, 12.8)
+	insertSnapshot(s1)
+	
+	s2 := calculateLocalRelationalState("SERVICE_SLOW_NORMAL_TEST", 500.0, 1, "", "REAL", 14.0, 84.5)
+	insertSnapshot(s2)
+	
+	s3 := calculateLocalRelationalState("SERVICE_TIMEOUT_TEST", 3000.0, 0, "TIMEOUT", "PUNITIVE_FALLBACK", 100.0, 30.0)
+	insertSnapshot(s3)
+	
+	time.Sleep(2 * time.Second)
 }
