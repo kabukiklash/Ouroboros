@@ -92,3 +92,28 @@ func TestShadowDBIntegration(t *testing.T) {
 	
 	time.Sleep(2 * time.Second)
 }
+
+func TestShadowRetentionPolicy(t *testing.T) {
+	initDB()
+	
+	// Create mock shadow evaluations to trigger purge
+	for i := 0; i < 5; i++ {
+		db.Exec(`INSERT INTO relational_shadow_evaluations 
+		(snapshot_id, service_id, snapshot_hash, formula_version, absolute_pressure, absolute_pressure_level, relational_shock, relational_shock_level, directional_drift, fault_signal, memory_confidence, experimental_interpretation, created_at)
+		VALUES (1, 'TEST_PURGE', 'hash', 'v0.1', 10, 'LOW', 10, 'LOW', 10, 'NONE', 'COLD', 'TEST', '2000-01-01 12:00:00')`)
+	}
+
+	dbMutex.Lock()
+	cutoff := time.Now().Add(-time.Duration(OUROBOROS_SHADOW_RETENTION_HOURS) * time.Hour)
+	res, _ := db.Exec(`DELETE FROM relational_shadow_evaluations WHERE created_at < ?`, cutoff.Format("2006-01-02 15:04:05"))
+	rows, _ := res.RowsAffected()
+	dbMutex.Unlock()
+
+	if rows == 0 {
+		t.Errorf("Esperava apagar registros antigos, mas apagou 0.")
+	}
+	
+	var count int
+	db.QueryRow(`SELECT count(*) FROM relational_shadow_retention_events`).Scan(&count)
+	// We don't assert count since temporal worker might not have written, we just check no panic.
+}

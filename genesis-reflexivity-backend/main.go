@@ -23,6 +23,11 @@ const OUROBOROS_RELATIONAL_MAX_ROWS = 500000
 const OUROBOROS_RELATIONAL_RETENTION_HOURS = 24
 const OUROBOROS_RELATIONAL_PURGE_INTERVAL_SECONDS = 300
 
+const OUROBOROS_SHADOW_RETENTION_ENABLED = true
+const OUROBOROS_SHADOW_MAX_ROWS = 500000
+const OUROBOROS_SHADOW_RETENTION_HOURS = 24
+const OUROBOROS_SHADOW_PURGE_INTERVAL_SECONDS = 300
+
 var upgrader = websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
 
 var serviceAlphas = struct {
@@ -97,6 +102,16 @@ func initDB() {
 		memory_confidence TEXT NOT NULL,
 		experimental_interpretation TEXT NOT NULL,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+	)`)
+	
+	db.Exec(`CREATE TABLE IF NOT EXISTS relational_shadow_retention_events (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+		rows_deleted INTEGER NOT NULL,
+		policy_json TEXT,
+		last_deleted_id INTEGER,
+		last_deleted_snapshot_id INTEGER,
+		last_deleted_snapshot_hash TEXT
 	)`)
 	
 	setAlpha("INTERNAL_KERNEL", 5.0)
@@ -297,6 +312,36 @@ func temporalRetentionWorker() {
 			policy := fmt.Sprintf(`{"max_rows":%d,"retention_hours":%d}`, OUROBOROS_RELATIONAL_MAX_ROWS, OUROBOROS_RELATIONAL_RETENTION_HOURS)
 			db.Exec(`INSERT INTO relational_retention_events (rows_deleted, policy_json, last_deleted_id, last_deleted_hash) VALUES (?, ?, ?, ?)`, totalDeleted, policy, lastId.Int64, lastHash.String)
 			log.Printf("Gate 01 - Expurgo Relacional executado: %d linhas removidas.", totalDeleted)
+		}
+		dbMutex.Unlock()
+	}
+}
+
+func temporalShadowRetentionWorker() {
+	for {
+		time.Sleep(time.Duration(OUROBOROS_SHADOW_PURGE_INTERVAL_SECONDS) * time.Second)
+		if !OUROBOROS_SHADOW_RETENTION_ENABLED {
+			continue
+		}
+
+		dbMutex.Lock()
+		cutoff := time.Now().Add(-time.Duration(OUROBOROS_SHADOW_RETENTION_HOURS) * time.Hour)
+		resTime, _ := db.Exec(`DELETE FROM relational_shadow_evaluations WHERE created_at < ?`, cutoff.Format("2006-01-02 15:04:05"))
+		rowsTime, _ := resTime.RowsAffected()
+
+		resCount, _ := db.Exec(`DELETE FROM relational_shadow_evaluations WHERE id NOT IN (SELECT id FROM relational_shadow_evaluations ORDER BY id DESC LIMIT ?)`, OUROBOROS_SHADOW_MAX_ROWS)
+		rowsCount, _ := resCount.RowsAffected()
+
+		totalDeleted := rowsTime + rowsCount
+
+		if totalDeleted > 0 {
+			var lastId, lastSnapId sql.NullInt64
+			var lastHash sql.NullString
+			db.QueryRow(`SELECT id, snapshot_id, snapshot_hash FROM relational_shadow_evaluations ORDER BY id DESC LIMIT 1`).Scan(&lastId, &lastSnapId, &lastHash)
+
+			policy := fmt.Sprintf(`{"max_rows":%d,"retention_hours":%d}`, OUROBOROS_SHADOW_MAX_ROWS, OUROBOROS_SHADOW_RETENTION_HOURS)
+			db.Exec(`INSERT INTO relational_shadow_retention_events (rows_deleted, policy_json, last_deleted_id, last_deleted_snapshot_id, last_deleted_snapshot_hash) VALUES (?, ?, ?, ?, ?)`, totalDeleted, policy, lastId.Int64, lastSnapId.Int64, lastHash.String)
+			log.Printf("Gate 03-B - Expurgo Shadow executado: %d linhas removidas.", totalDeleted)
 		}
 		dbMutex.Unlock()
 	}
@@ -672,6 +717,7 @@ func main() {
 	
 	go temporalAuditWorker()
 	go temporalRetentionWorker()
+	go temporalShadowRetentionWorker()
 	go simulationWorker()
 
 	externalStates.Lock()
