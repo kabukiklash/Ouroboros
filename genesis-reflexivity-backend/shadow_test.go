@@ -2,6 +2,7 @@ package main
 
 import (
 	"math"
+	"os"
 	"testing"
 	"time"
 )
@@ -104,7 +105,7 @@ func TestShadowRetentionPolicy(t *testing.T) {
 	}
 
 	dbMutex.Lock()
-	cutoff := time.Now().Add(-time.Duration(OUROBOROS_SHADOW_RETENTION_HOURS) * time.Hour)
+	cutoff := time.Now().Add(-time.Duration(getShadowRetentionHours()) * time.Hour)
 	res, _ := db.Exec(`DELETE FROM relational_shadow_evaluations WHERE created_at < ?`, cutoff.Format("2006-01-02 15:04:05"))
 	rows, _ := res.RowsAffected()
 	dbMutex.Unlock()
@@ -116,4 +117,36 @@ func TestShadowRetentionPolicy(t *testing.T) {
 	var count int
 	db.QueryRow(`SELECT count(*) FROM relational_shadow_retention_events`).Scan(&count)
 	// We don't assert count since temporal worker might not have written, we just check no panic.
+}
+
+func TestShadowRetentionEnvConfig(t *testing.T) {
+	// 1. Defaults without env
+	os.Unsetenv("OUROBOROS_SHADOW_MAX_ROWS")
+	os.Unsetenv("OUROBOROS_SHADOW_RETENTION_HOURS")
+	
+	if getShadowMaxRows() != 500000 {
+		t.Errorf("Esperava max rows default 500000")
+	}
+	if getShadowRetentionHours() != 24 {
+		t.Errorf("Esperava retention hours default 24")
+	}
+
+	// 2. Custom env
+	os.Setenv("OUROBOROS_SHADOW_MAX_ROWS", "100")
+	os.Setenv("OUROBOROS_SHADOW_RETENTION_HOURS", "12")
+	if getShadowMaxRows() != 100 {
+		t.Errorf("Esperava max rows custom 100")
+	}
+	if getShadowRetentionHours() != 12 {
+		t.Errorf("Esperava retention hours custom 12")
+	}
+
+	// 3. Invalid env (fallback)
+	os.Setenv("OUROBOROS_SHADOW_MAX_ROWS", "INVALID")
+	if getShadowMaxRows() != 500000 {
+		t.Errorf("Esperava max rows default 500000 após erro de parse")
+	}
+	
+	os.Unsetenv("OUROBOROS_SHADOW_MAX_ROWS")
+	os.Unsetenv("OUROBOROS_SHADOW_RETENTION_HOURS")
 }

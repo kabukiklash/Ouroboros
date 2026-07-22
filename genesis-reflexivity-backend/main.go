@@ -10,6 +10,7 @@ import (
 	"math"
 	"math/rand"
 	"net/http"
+	"os"
 	"strconv"
 	"sync"
 	"time"
@@ -22,11 +23,6 @@ const OUROBOROS_RELATIONAL_SNAPSHOTS_ENABLED = true
 const OUROBOROS_RELATIONAL_MAX_ROWS = 500000
 const OUROBOROS_RELATIONAL_RETENTION_HOURS = 24
 const OUROBOROS_RELATIONAL_PURGE_INTERVAL_SECONDS = 300
-
-const OUROBOROS_SHADOW_RETENTION_ENABLED = true
-const OUROBOROS_SHADOW_MAX_ROWS = 500000
-const OUROBOROS_SHADOW_RETENTION_HOURS = 24
-const OUROBOROS_SHADOW_PURGE_INTERVAL_SECONDS = 300
 
 var upgrader = websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
 
@@ -317,19 +313,63 @@ func temporalRetentionWorker() {
 	}
 }
 
+func getShadowRetentionEnabled() bool {
+	val := os.Getenv("OUROBOROS_SHADOW_RETENTION_ENABLED")
+	if val == "false" {
+		return false
+	}
+	return true
+}
+
+func getShadowMaxRows() int {
+	val := os.Getenv("OUROBOROS_SHADOW_MAX_ROWS")
+	if val != "" {
+		if parsed, err := strconv.Atoi(val); err == nil && parsed > 0 {
+			return parsed
+		}
+		log.Println("Gate 03-B.1 - Aviso: OUROBOROS_SHADOW_MAX_ROWS invalido, usando default 500000.")
+	}
+	return 500000
+}
+
+func getShadowRetentionHours() int {
+	val := os.Getenv("OUROBOROS_SHADOW_RETENTION_HOURS")
+	if val != "" {
+		if parsed, err := strconv.Atoi(val); err == nil && parsed > 0 {
+			return parsed
+		}
+		log.Println("Gate 03-B.1 - Aviso: OUROBOROS_SHADOW_RETENTION_HOURS invalido, usando default 24.")
+	}
+	return 24
+}
+
+func getShadowPurgeInterval() int {
+	val := os.Getenv("OUROBOROS_SHADOW_PURGE_INTERVAL_SECONDS")
+	if val != "" {
+		if parsed, err := strconv.Atoi(val); err == nil && parsed > 0 {
+			return parsed
+		}
+		log.Println("Gate 03-B.1 - Aviso: OUROBOROS_SHADOW_PURGE_INTERVAL_SECONDS invalido, usando default 300.")
+	}
+	return 300
+}
+
 func temporalShadowRetentionWorker() {
 	for {
-		time.Sleep(time.Duration(OUROBOROS_SHADOW_PURGE_INTERVAL_SECONDS) * time.Second)
-		if !OUROBOROS_SHADOW_RETENTION_ENABLED {
+		time.Sleep(time.Duration(getShadowPurgeInterval()) * time.Second)
+		if !getShadowRetentionEnabled() {
 			continue
 		}
 
 		dbMutex.Lock()
-		cutoff := time.Now().Add(-time.Duration(OUROBOROS_SHADOW_RETENTION_HOURS) * time.Hour)
+		maxRows := getShadowMaxRows()
+		retentionHours := getShadowRetentionHours()
+		
+		cutoff := time.Now().Add(-time.Duration(retentionHours) * time.Hour)
 		resTime, _ := db.Exec(`DELETE FROM relational_shadow_evaluations WHERE created_at < ?`, cutoff.Format("2006-01-02 15:04:05"))
 		rowsTime, _ := resTime.RowsAffected()
 
-		resCount, _ := db.Exec(`DELETE FROM relational_shadow_evaluations WHERE id NOT IN (SELECT id FROM relational_shadow_evaluations ORDER BY id DESC LIMIT ?)`, OUROBOROS_SHADOW_MAX_ROWS)
+		resCount, _ := db.Exec(`DELETE FROM relational_shadow_evaluations WHERE id NOT IN (SELECT id FROM relational_shadow_evaluations ORDER BY id DESC LIMIT ?)`, maxRows)
 		rowsCount, _ := resCount.RowsAffected()
 
 		totalDeleted := rowsTime + rowsCount
@@ -339,9 +379,9 @@ func temporalShadowRetentionWorker() {
 			var lastHash sql.NullString
 			db.QueryRow(`SELECT id, snapshot_id, snapshot_hash FROM relational_shadow_evaluations ORDER BY id DESC LIMIT 1`).Scan(&lastId, &lastSnapId, &lastHash)
 
-			policy := fmt.Sprintf(`{"max_rows":%d,"retention_hours":%d}`, OUROBOROS_SHADOW_MAX_ROWS, OUROBOROS_SHADOW_RETENTION_HOURS)
+			policy := fmt.Sprintf(`{"max_rows":%d,"retention_hours":%d}`, maxRows, retentionHours)
 			db.Exec(`INSERT INTO relational_shadow_retention_events (rows_deleted, policy_json, last_deleted_id, last_deleted_snapshot_id, last_deleted_snapshot_hash) VALUES (?, ?, ?, ?, ?)`, totalDeleted, policy, lastId.Int64, lastSnapId.Int64, lastHash.String)
-			log.Printf("Gate 03-B - Expurgo Shadow executado: %d linhas removidas.", totalDeleted)
+			log.Printf("Gate 03-B.1 - Expurgo Shadow executado: %d linhas removidas.", totalDeleted)
 		}
 		dbMutex.Unlock()
 	}
