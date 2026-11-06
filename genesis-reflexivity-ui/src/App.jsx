@@ -300,20 +300,26 @@ function HistoryView() {
   const [diagnosticsData, setDiagnosticsData] = useState([]);
   
   useEffect(() => {
-    fetch('http://localhost:8082/api/history')
-      .then(r => r.json())
-      .then(d => setData(d))
-      .catch(e => console.error("Erro ao ler db:", e));
+    const loadData = () => {
+      fetch('http://localhost:8082/api/history')
+        .then(r => r.json())
+        .then(d => setData(d))
+        .catch(e => console.error("Erro ao ler db:", e));
 
-    fetch('http://localhost:8082/api/relational/shadow')
-      .then(r => r.json())
-      .then(d => setShadowData(d))
-      .catch(e => console.error("Erro ao ler shadow db:", e));
+      fetch('http://localhost:8082/api/relational/shadow')
+        .then(r => r.json())
+        .then(d => setShadowData(d))
+        .catch(e => console.error("Erro ao ler shadow db:", e));
 
-    fetch('http://localhost:8082/api/relational/diagnostics')
-      .then(r => r.json())
-      .then(d => setDiagnosticsData(d))
-      .catch(e => console.error("Erro ao ler diagnostics:", e));
+      fetch('http://localhost:8082/api/relational/diagnostics')
+        .then(r => r.json())
+        .then(d => setDiagnosticsData(d))
+        .catch(e => console.error("Erro ao ler diagnostics:", e));
+    };
+
+    loadData();
+    const interval = setInterval(loadData, 2000);
+    return () => clearInterval(interval);
   }, []);
 
   // Catálogo Tradutor Amigável para o Usuário Padrão
