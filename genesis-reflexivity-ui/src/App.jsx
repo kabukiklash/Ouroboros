@@ -296,17 +296,174 @@ export default function App() {
 
 function HistoryView() {
   const [data, setData] = useState([]);
+  const [shadowData, setShadowData] = useState([]);
+  const [diagnosticsData, setDiagnosticsData] = useState([]);
   
   useEffect(() => {
     fetch('http://localhost:8082/api/history')
       .then(r => r.json())
       .then(d => setData(d))
       .catch(e => console.error("Erro ao ler db:", e));
+
+    fetch('http://localhost:8082/api/relational/shadow')
+      .then(r => r.json())
+      .then(d => setShadowData(d))
+      .catch(e => console.error("Erro ao ler shadow db:", e));
+
+    fetch('http://localhost:8082/api/relational/diagnostics')
+      .then(r => r.json())
+      .then(d => setDiagnosticsData(d))
+      .catch(e => console.error("Erro ao ler diagnostics:", e));
   }, []);
+
+  // Catálogo Tradutor Amigável para o Usuário Padrão
+  const getFriendlyService = (srv) => {
+    if (srv === 'SERVICE_SLOW_NORMAL') {
+      return {
+        title: '📦 Processamento Pesado (Relatórios / Lote)',
+        desc: 'Simula rotinas de 400-450ms (geração de PDFs, faturamento e sincronização). É naturalmente pesado e esperado.',
+        isHeavyNormal: true
+      };
+    }
+    if (srv === 'SERVICE_FAST_NORMAL') {
+      return {
+        title: '⚡ Motor Transacional Rápido (Tempo Real)',
+        desc: 'Rotas críticas instantâneas (30-50ms) como autenticação, consulta de sessão e Kanban.',
+        isHeavyNormal: false
+      };
+    }
+    if (srv.includes('127.0.0.1:3000') || srv.includes('health')) {
+      return {
+        title: '🛡️ GenesisCore Foundation (Governança Central)',
+        desc: 'Servidor Node.js na porta 3000 responsável pelo ledger e integridade dos agentes.',
+        isHeavyNormal: false
+      };
+    }
+    return {
+      title: `🌐 ${srv}`,
+      desc: 'Endpoint de rede monitorado continuamente via probe externo.',
+      isHeavyNormal: false
+    };
+  };
   
   return (
     <div style={{color: '#fff', marginTop: '2rem'}}>
-      <h2 style={{marginBottom: '1rem'}}>Audit Log (SQLite)</h2>
+      {/* SEÇÃO GATE 04: JEV AUTONOMOUS DIAGNOSTICS & MITIGATION */}
+      <div style={{marginBottom: '2.5rem', background: 'linear-gradient(135deg, rgba(20, 24, 40, 0.9), rgba(10, 14, 25, 0.9))', padding: '1.5rem', borderRadius: '12px', border: '1px solid rgba(0, 240, 255, 0.3)'}}>
+        <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem'}}>
+          <h2 style={{margin: 0, color: '#00f0ff', fontSize: '1.25rem', display: 'flex', alignItems: 'center', gap: '8px'}}>
+            🛡️ Gate 04: Jev Autonomous Diagnostics & Mitigation Dispatcher
+          </h2>
+          <span style={{padding: '4px 12px', borderRadius: '20px', fontSize: '0.75rem', background: 'rgba(39, 201, 63, 0.2)', color: '#27c93f', border: '1px solid #27c93f'}}>
+            Motor Auto-Imune Ativo (Sem Restart Cego)
+          </span>
+        </div>
+        <p style={{color: '#8892b0', fontSize: '0.9rem', marginBottom: '1rem'}}>
+          Diagnósticos causais produzidos pelo modelo <strong>Jev System-One</strong> e traduzidos para linguagem humana.
+        </p>
+
+        {diagnosticsData.length === 0 ? (
+          <div style={{padding: '1rem', background: 'rgba(255,255,255,0.03)', borderRadius: '8px', color: '#8892b0', fontSize: '0.9rem'}}>
+            ✨ Nenhuma anomalia crítica ou choque relacional detectado no momento. Todos os serviços operam dentro de seus padrões de equilíbrio.
+          </div>
+        ) : (
+          <div className="glass-card" style={{overflowX: 'auto', padding: '0.5rem'}}>
+            <table style={{width: '100%', textAlign: 'left', borderCollapse: 'collapse', fontSize: '0.88rem'}}>
+              <thead>
+                <tr style={{borderBottom: '1px solid rgba(255,255,255,0.1)'}}>
+                  <th style={{padding: '10px'}}>Hora</th>
+                  <th style={{padding: '10px'}}>Serviço AfixGraf</th>
+                  <th style={{padding: '10px'}}>Causa Raiz Identificada (Jev)</th>
+                  <th style={{padding: '10px'}}>Mitigação Autônoma Aplicada</th>
+                  <th style={{padding: '10px'}}>Veredito Humano</th>
+                </tr>
+              </thead>
+              <tbody>
+                {diagnosticsData.map((d, i) => (
+                  <tr key={i} style={{borderBottom: '1px solid rgba(255,255,255,0.05)'}}>
+                    <td style={{padding: '10px', color: '#b485ff'}}>{d.timestamp}</td>
+                    <td style={{padding: '10px', fontWeight: 'bold'}}>{d.serviceLabel}</td>
+                    <td style={{padding: '10px', color: '#ffbd2e'}}>{d.rootCauseHuman}</td>
+                    <td style={{padding: '10px', color: '#00f0ff'}}>{d.mitigationHuman}</td>
+                    <td style={{padding: '10px', color: '#27c93f', fontSize: '0.85rem'}}>{d.humanSummary}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      <h2 style={{marginBottom: '0.5rem'}}>Gate 03: Relational Shadow Evaluations (PER)</h2>
+      <p style={{color: '#8892b0', marginBottom: '1.5rem'}}>
+        Exibindo as avaliações relacionais em modo sombra traduzidas para linguagem humana clara (sem falsos alarmes em tarefas pesadas normais).
+      </p>
+
+      <div className="glass-card" style={{overflowX: 'auto', padding: '1rem', marginBottom: '2.5rem'}}>
+        <table style={{width: '100%', textAlign: 'left', borderCollapse: 'collapse'}}>
+          <thead>
+            <tr style={{borderBottom: '1px solid rgba(255,255,255,0.1)'}}>
+              <th style={{padding: '12px'}}>ID</th>
+              <th style={{padding: '12px'}}>Identidade do Serviço</th>
+              <th style={{padding: '12px'}}>Peso da Tarefa (Pressão)</th>
+              <th style={{padding: '12px'}}>Susto Relacional (Choque)</th>
+              <th style={{padding: '12px'}}>Tendência</th>
+              <th style={{padding: '12px'}}>Falha</th>
+              <th style={{padding: '12px'}}>Estabilidade</th>
+              <th style={{padding: '12px'}}>Laudo Explicativo (Humano)</th>
+            </tr>
+          </thead>
+          <tbody>
+            {shadowData.map(s => {
+              const friendly = getFriendlyService(s.serviceId);
+              const isHeavyOk = friendly.isHeavyNormal && s.relationalShock < 20;
+
+              return (
+                <tr key={s.id} style={{borderBottom: '1px solid rgba(255,255,255,0.05)'}}>
+                  <td style={{padding: '12px', color: '#8892b0'}}>#{s.id}</td>
+                  <td style={{padding: '12px'}}>
+                    <div style={{fontWeight: 'bold', color: '#fff'}}>{friendly.title}</div>
+                    <div style={{fontSize: '0.75rem', color: '#8892b0'}}>{s.serviceId}</div>
+                  </td>
+                  <td style={{padding: '12px'}}>
+                    {isHeavyOk ? (
+                      <span style={{color: '#27c93f', background: 'rgba(39, 201, 63, 0.15)', padding: '2px 8px', borderRadius: '4px', fontSize: '0.85rem'}}>
+                        {Number(s.absolutePressure || 0).toFixed(1)} (PESO ESPERADO)
+                      </span>
+                    ) : (
+                      <span style={{color: s.absolutePressureLevel === 'CRITICAL' ? '#ff5f56' : '#00f0ff'}}>
+                        {Number(s.absolutePressure || 0).toFixed(1)} ({s.absolutePressureLevel})
+                      </span>
+                    )}
+                  </td>
+                  <td style={{padding: '12px'}}>
+                    <span style={{color: s.relationalShockLevel === 'LOW' ? '#27c93f' : '#ffbd2e', fontWeight: 'bold'}}>
+                      {Number(s.relationalShock || 0).toFixed(2)}% ({s.relationalShockLevel})
+                    </span>
+                  </td>
+                  <td style={{padding: '12px', color: s.directionalDrift < 0 ? '#27c93f' : '#cbd5e1'}}>
+                    {s.directionalDrift < 0 ? '⬇️ Melhorando' : '➡️ Estável'} ({Number(s.directionalDrift || 0).toFixed(1)})
+                  </td>
+                  <td style={{padding: '12px', color: s.faultSignal === 'NONE' ? '#27c93f' : '#ff5f56'}}>
+                    {s.faultSignal === 'NONE' ? '✅ Nenhuma' : s.faultSignal}
+                  </td>
+                  <td style={{padding: '12px', color: '#b485ff'}}>
+                    {s.memoryConfidence === 'STABLE' ? '🟣 Consolidada' : s.memoryConfidence}
+                  </td>
+                  <td style={{padding: '12px', color: '#cbd5e1', fontSize: '0.85rem'}}>
+                    {isHeavyOk 
+                      ? '✨ Trabalho pesado contínuo sem susto. Operando 100% no ritmo previsto.'
+                      : s.experimentalInterpretation
+                    }
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      <h2 style={{marginBottom: '1rem'}}>Audit Log (SQLite — Telemetry History)</h2>
       <p style={{color: '#8892b0', marginBottom: '2rem'}}>
         Exibindo as últimas 500 pontuações temporais salvas no banco de dados.
       </p>

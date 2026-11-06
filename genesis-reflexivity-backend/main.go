@@ -109,6 +109,23 @@ func initDB() {
 		last_deleted_snapshot_id INTEGER,
 		last_deleted_snapshot_hash TEXT
 	)`)
+
+	db.Exec(`CREATE TABLE IF NOT EXISTS relational_diagnostics_events (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		service_id TEXT NOT NULL,
+		snapshot_id INTEGER NOT NULL,
+		root_cause TEXT NOT NULL,
+		mitigation_applied TEXT NOT NULL,
+		needs_restart_noul REAL NOT NULL,
+		confidence_level TEXT NOT NULL,
+		diagnostics_payload_json TEXT,
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+	)`)
+
+	db.Exec(`CREATE INDEX IF NOT EXISTS idx_telemetry_service_id ON telemetry_history(service_id, id DESC)`)
+	db.Exec(`CREATE INDEX IF NOT EXISTS idx_snapshots_service_id ON relational_snapshots(service_id, id DESC)`)
+	db.Exec(`CREATE INDEX IF NOT EXISTS idx_shadow_service_id ON relational_shadow_evaluations(service_id, id DESC)`)
+	db.Exec(`CREATE INDEX IF NOT EXISTS idx_diag_service ON relational_diagnostics_events(service_id, id DESC)`)
 	
 	setAlpha("INTERNAL_KERNEL", 5.0)
 }
@@ -148,6 +165,8 @@ func calculateLocalRelationalState(serviceId string, latencyMs float64, sampleOk
 		status = "WARN"
 	}
 
+	reasonJSON := fmt.Sprintf(`{"status":"%s","ck_score":%.4f,"divergence":%.4f,"alpha":%.4f}`, status, ckScore, divergence, historicalAlpha)
+
 	return RelationalState{
 		ServiceID:     serviceId,
 		ObservedAtMs:  time.Now().UnixNano() / 1e6,
@@ -162,7 +181,7 @@ func calculateLocalRelationalState(serviceId string, latencyMs float64, sampleOk
 		Divergence:    divergence,
 		Friction:      finalFriction,
 		State:         status,
-		ReasonJSON:    "{}",
+		ReasonJSON:    reasonJSON,
 	}
 }
 
@@ -192,11 +211,13 @@ func insertSnapshot(state RelationalState) {
 
 		schemaVersion := 1
 		currHash := generateHash(state, ph, schemaVersion)
+		relationsJSON := fmt.Sprintf(`{"service_id":"%s","entropy_source":"%s","previous_hash":"%s"}`, state.ServiceID, state.EntropySource, ph)
+		impactJSON := fmt.Sprintf(`{"state":"%s","friction":%.4f,"action_taken":"%s"}`, state.State, state.Friction, state.ActionTaken)
 
 		res, err := db.Exec(`INSERT INTO relational_snapshots 
 		(service_id, observed_at_ms, latency_ms, sample_ok, error_kind, entropy_source, entropy, density, ck_score, alpha_at_time, divergence, friction, state, action_taken, reason_json, relations_json, impact_json, schema_version, previous_hash, current_hash) 
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			state.ServiceID, state.ObservedAtMs, state.LatencyMs, state.SampleOk, state.ErrorKind, state.EntropySource, state.Entropy, state.Density, state.CkScore, state.AlphaAtTime, state.Divergence, state.Friction, state.State, state.ActionTaken, state.ReasonJSON, "{}", "{}", schemaVersion, ph, currHash)
+			state.ServiceID, state.ObservedAtMs, state.LatencyMs, state.SampleOk, state.ErrorKind, state.EntropySource, state.Entropy, state.Density, state.CkScore, state.AlphaAtTime, state.Divergence, state.Friction, state.State, state.ActionTaken, state.ReasonJSON, relationsJSON, impactJSON, schemaVersion, ph, currHash)
 
 		if err != nil {
 			log.Println("Gate 01 - Falha best-effort ao inserir snapshot:", err)
@@ -235,6 +256,8 @@ func executeShadowEvaluation(state RelationalState, snapshotID int64, currHash s
 
 	if err != nil {
 		log.Println("Gate 03-A - Falha ao inserir shadow evaluation:", err)
+	} else {
+		go dispatchGate04Diagnostics(state, eval.RelationalShockLevel, eval.RelationalShock, eval.DirectionalDrift)
 	}
 }
 
@@ -292,7 +315,13 @@ func temporalRetentionWorker() {
 
 		dbMutex.Lock()
 		cutoff := time.Now().Add(-time.Duration(OUROBOROS_RELATIONAL_RETENTION_HOURS) * time.Hour)
-		resTime, _ := db.Exec(`DELETE FROM relational_snapshots WHERE inserted_at < ?`, cutoff.Format("2006-01-02 15:04:05"))
+		cutoffStr := cutoff.Format("2006-01-02 15:04:05")
+
+		var lastId sql.NullInt64
+		var lastHash sql.NullString
+		db.QueryRow(`SELECT id, current_hash FROM relational_snapshots WHERE inserted_at < ? OR id NOT IN (SELECT id FROM relational_snapshots ORDER BY id DESC LIMIT ?) ORDER BY id DESC LIMIT 1`, cutoffStr, OUROBOROS_RELATIONAL_MAX_ROWS).Scan(&lastId, &lastHash)
+
+		resTime, _ := db.Exec(`DELETE FROM relational_snapshots WHERE inserted_at < ?`, cutoffStr)
 		rowsTime, _ := resTime.RowsAffected()
 
 		resCount, _ := db.Exec(`DELETE FROM relational_snapshots WHERE id NOT IN (SELECT id FROM relational_snapshots ORDER BY id DESC LIMIT ?)`, OUROBOROS_RELATIONAL_MAX_ROWS)
@@ -301,10 +330,6 @@ func temporalRetentionWorker() {
 		totalDeleted := rowsTime + rowsCount
 
 		if totalDeleted > 0 {
-			var lastId sql.NullInt64
-			var lastHash sql.NullString
-			db.QueryRow(`SELECT id, current_hash FROM relational_snapshots ORDER BY id DESC LIMIT 1`).Scan(&lastId, &lastHash)
-
 			policy := fmt.Sprintf(`{"max_rows":%d,"retention_hours":%d}`, OUROBOROS_RELATIONAL_MAX_ROWS, OUROBOROS_RELATIONAL_RETENTION_HOURS)
 			db.Exec(`INSERT INTO relational_retention_events (rows_deleted, policy_json, last_deleted_id, last_deleted_hash) VALUES (?, ?, ?, ?)`, totalDeleted, policy, lastId.Int64, lastHash.String)
 			log.Printf("Gate 01 - Expurgo Relacional executado: %d linhas removidas.", totalDeleted)
@@ -366,7 +391,13 @@ func temporalShadowRetentionWorker() {
 		retentionHours := getShadowRetentionHours()
 		
 		cutoff := time.Now().Add(-time.Duration(retentionHours) * time.Hour)
-		resTime, _ := db.Exec(`DELETE FROM relational_shadow_evaluations WHERE created_at < ?`, cutoff.Format("2006-01-02 15:04:05"))
+		cutoffStr := cutoff.Format("2006-01-02 15:04:05")
+
+		var lastId, lastSnapId sql.NullInt64
+		var lastHash sql.NullString
+		db.QueryRow(`SELECT id, snapshot_id, snapshot_hash FROM relational_shadow_evaluations WHERE created_at < ? OR id NOT IN (SELECT id FROM relational_shadow_evaluations ORDER BY id DESC LIMIT ?) ORDER BY id DESC LIMIT 1`, cutoffStr, maxRows).Scan(&lastId, &lastSnapId, &lastHash)
+
+		resTime, _ := db.Exec(`DELETE FROM relational_shadow_evaluations WHERE created_at < ?`, cutoffStr)
 		rowsTime, _ := resTime.RowsAffected()
 
 		resCount, _ := db.Exec(`DELETE FROM relational_shadow_evaluations WHERE id NOT IN (SELECT id FROM relational_shadow_evaluations ORDER BY id DESC LIMIT ?)`, maxRows)
@@ -375,10 +406,6 @@ func temporalShadowRetentionWorker() {
 		totalDeleted := rowsTime + rowsCount
 
 		if totalDeleted > 0 {
-			var lastId, lastSnapId sql.NullInt64
-			var lastHash sql.NullString
-			db.QueryRow(`SELECT id, snapshot_id, snapshot_hash FROM relational_shadow_evaluations ORDER BY id DESC LIMIT 1`).Scan(&lastId, &lastSnapId, &lastHash)
-
 			policy := fmt.Sprintf(`{"max_rows":%d,"retention_hours":%d}`, maxRows, retentionHours)
 			db.Exec(`INSERT INTO relational_shadow_retention_events (rows_deleted, policy_json, last_deleted_id, last_deleted_snapshot_id, last_deleted_snapshot_hash) VALUES (?, ?, ?, ?, ?)`, totalDeleted, policy, lastId.Int64, lastSnapId.Int64, lastHash.String)
 			log.Printf("Gate 03-B.1 - Expurgo Shadow executado: %d linhas removidas.", totalDeleted)
@@ -436,7 +463,6 @@ func simulationWorker() {
 func runExperiment(srv string, min, max float64) {
 	denyCount := 0
 	setAlpha(srv, (min+max)/2) // Pre-seed Alpha for faster warmup
-	startTime := time.Now()
 	for {
 		engineMutex.RLock()
 		active := EngineActive
@@ -446,10 +472,14 @@ func runExperiment(srv string, min, max float64) {
 			continue
 		}
 
+		scenarioMutex.RLock()
+		sc := currentScenario
+		scenarioMutex.RUnlock()
+
 		latency := min + rand.Float64()*(max-min)
-		
-		// Injeta o pico de 500ms após 20 segundos de warmup
-		if time.Since(startTime) > 20*time.Second {
+		if sc == "HIGH_LOAD_EXPECTED" {
+			latency = max*1.8 + rand.Float64()*20.0
+		} else if sc == "ATTACK" {
 			latency = 500.0
 		}
 
@@ -751,6 +781,95 @@ func getRelationalSnapshots(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(snaps)
 }
 
+func getRelationalShadowEvaluations(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	limitStr := r.URL.Query().Get("limit")
+	limit := 100
+	if limitStr != "" {
+		if l, err := strconv.Atoi(limitStr); err == nil && l > 0 && l <= 1000 {
+			limit = l
+		}
+	}
+
+	serviceId := r.URL.Query().Get("service_id")
+	query := `SELECT id, snapshot_id, service_id, snapshot_hash, formula_version, absolute_pressure, absolute_pressure_level, relational_shock, relational_shock_level, directional_drift, fault_signal, memory_confidence, experimental_interpretation, created_at FROM relational_shadow_evaluations`
+	var args []interface{}
+	if serviceId != "" {
+		query += " WHERE service_id = ?"
+		args = append(args, serviceId)
+	}
+	query += " ORDER BY id DESC LIMIT ?"
+	args = append(args, limit)
+
+	dbMutex.Lock()
+	rows, err := db.Query(query, args...)
+	dbMutex.Unlock()
+
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	type ShadowRow struct {
+		ID                         int64   `json:"id"`
+		SnapshotID                 int64   `json:"snapshotId"`
+		ServiceID                  string  `json:"serviceId"`
+		SnapshotHash               string  `json:"snapshotHash"`
+		FormulaVersion             string  `json:"formulaVersion"`
+		AbsolutePressure           float64 `json:"absolutePressure"`
+		AbsolutePressureLevel      string  `json:"absolutePressureLevel"`
+		RelationalShock            float64 `json:"relationalShock"`
+		RelationalShockLevel       string  `json:"relationalShockLevel"`
+		DirectionalDrift           float64 `json:"directionalDrift"`
+		FaultSignal                string  `json:"faultSignal"`
+		MemoryConfidence           string  `json:"memoryConfidence"`
+		ExperimentalInterpretation string  `json:"experimentalInterpretation"`
+		CreatedAt                  string  `json:"createdAt"`
+	}
+
+	var evals []ShadowRow
+	for rows.Next() {
+		var row ShadowRow
+		rows.Scan(
+			&row.ID,
+			&row.SnapshotID,
+			&row.ServiceID,
+			&row.SnapshotHash,
+			&row.FormulaVersion,
+			&row.AbsolutePressure,
+			&row.AbsolutePressureLevel,
+			&row.RelationalShock,
+			&row.RelationalShockLevel,
+			&row.DirectionalDrift,
+			&row.FaultSignal,
+			&row.MemoryConfidence,
+			&row.ExperimentalInterpretation,
+			&row.CreatedAt,
+		)
+		evals = append(evals, row)
+	}
+	if evals == nil {
+		evals = []ShadowRow{}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(evals)
+}
+
+func getRelationalDiagnostics(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Content-Type", "application/json")
+
+	cachedDiagnostics.RLock()
+	recs := make([]DiagnosticRecord, len(cachedDiagnostics.records))
+	copy(recs, cachedDiagnostics.records)
+	cachedDiagnostics.RUnlock()
+
+	json.NewEncoder(w).Encode(recs)
+}
+
 func main() {
 	rand.Seed(time.Now().UnixNano())
 	initDB()
@@ -760,18 +879,22 @@ func main() {
 	go temporalShadowRetentionWorker()
 	go simulationWorker()
 
+	defaultTarget := "http://127.0.0.1:3000/v1/health"
 	externalStates.Lock()
-	externalStates.m["http://localhost:8081/sentinel"] = ExternalTarget{URL: "http://localhost:8081/sentinel", Status: "STARTING"}
+	externalStates.m[defaultTarget] = ExternalTarget{URL: defaultTarget, Status: "STARTING"}
 	externalStates.Unlock()
-	go pingWorker("http://localhost:8081/sentinel")
+	go pingWorker(defaultTarget)
 
 	http.HandleFunc("/ws", handleConnections)
 	http.HandleFunc("/api/history", getHistory)
-	http.HandleFunc("/api/relational/snapshots", getRelationalSnapshots) // Gate 01 read-only endpoint
+	http.HandleFunc("/api/relational/snapshots", getRelationalSnapshots)       // Gate 01 read-only endpoint
+	http.HandleFunc("/api/relational/shadow", getRelationalShadowEvaluations) // Gate 03 read-only endpoint
+	http.HandleFunc("/api/relational/diagnostics", getRelationalDiagnostics) // Gate 04 Jev Diagnostics & Mitigation endpoint
 
 	log.Println("=============================================================")
 	log.Println(" Genesis Reflexivity (Hybrid: Simulação + API Probing) ONLINE")
 	log.Println(" Gate 01: Relational Snapshot Layer [ATIVO]")
+	log.Println(" Gate 03: Relational Shadow Evaluator [ATIVO]")
 	log.Println(" Escutando na porta :8082")
 	log.Println("=============================================================")
 	http.ListenAndServe(":8082", nil)
