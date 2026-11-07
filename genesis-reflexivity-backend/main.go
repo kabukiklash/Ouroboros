@@ -122,6 +122,14 @@ func initDB() {
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	)`)
 
+	// Migrations idempotentes para trilha precisa de diagnóstico (Gate 04)
+	db.Exec(`ALTER TABLE relational_diagnostics_events ADD COLUMN sample_origin TEXT DEFAULT 'SIMULATION'`)
+	db.Exec(`ALTER TABLE relational_diagnostics_events ADD COLUMN jev_source TEXT DEFAULT ''`)
+	db.Exec(`ALTER TABLE relational_diagnostics_events ADD COLUMN status TEXT DEFAULT 'AVAILABLE'`)
+	db.Exec(`ALTER TABLE relational_diagnostics_events ADD COLUMN unavailable_reason TEXT DEFAULT ''`)
+	db.Exec(`ALTER TABLE relational_diagnostics_events ADD COLUMN mitigation_suggested TEXT DEFAULT ''`)
+	db.Exec(`ALTER TABLE relational_diagnostics_events ADD COLUMN mitigation_executed TEXT DEFAULT ''`)
+
 	db.Exec(`CREATE INDEX IF NOT EXISTS idx_telemetry_service_id ON telemetry_history(service_id, id DESC)`)
 	db.Exec(`CREATE INDEX IF NOT EXISTS idx_snapshots_service_id ON relational_snapshots(service_id, id DESC)`)
 	db.Exec(`CREATE INDEX IF NOT EXISTS idx_shadow_service_id ON relational_shadow_evaluations(service_id, id DESC)`)
@@ -257,7 +265,7 @@ func executeShadowEvaluation(state RelationalState, snapshotID int64, currHash s
 	if err != nil {
 		log.Println("Gate 03-A - Falha ao inserir shadow evaluation:", err)
 	} else {
-		go dispatchGate04Diagnostics(state, eval.RelationalShockLevel, eval.RelationalShock, eval.DirectionalDrift)
+		go dispatchGate04Diagnostics(state, eval.SnapshotID, eval.RelationalShockLevel, eval.RelationalShock, eval.DirectionalDrift)
 	}
 }
 
@@ -873,6 +881,7 @@ func getRelationalDiagnostics(w http.ResponseWriter, r *http.Request) {
 func main() {
 	rand.Seed(time.Now().UnixNano())
 	initDB()
+	loadHistoricalDiagnostics()
 	
 	go temporalAuditWorker()
 	go temporalRetentionWorker()

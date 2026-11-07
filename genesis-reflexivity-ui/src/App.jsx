@@ -352,6 +352,26 @@ function HistoryView() {
     };
   };
   
+  const renderSampleOriginBadge = (origin) => {
+    if (origin === 'PROBE') {
+      return <span style={{padding: '2px 6px', borderRadius: '4px', fontSize: '0.72rem', background: 'rgba(0, 240, 255, 0.15)', color: '#00f0ff', border: '1px solid rgba(0, 240, 255, 0.4)'}}>📡 Sonda Real</span>;
+    }
+    return <span style={{padding: '2px 6px', borderRadius: '4px', fontSize: '0.72rem', background: 'rgba(180, 133, 255, 0.15)', color: '#b485ff', border: '1px solid rgba(180, 133, 255, 0.4)'}}>🧪 Simulação</span>;
+  };
+
+  const renderJevSourceBadge = (src, hit) => {
+    if (src === 'fail_open_advisory') {
+      return <span style={{padding: '2px 6px', borderRadius: '4px', fontSize: '0.72rem', background: 'rgba(255, 189, 46, 0.2)', color: '#ffbd2e', border: '1px solid #ffbd2e'}}>⚠️ Fail-Open Advisory</span>;
+    }
+    if (src === 'cache_sha256' || hit) {
+      return <span style={{padding: '2px 6px', borderRadius: '4px', fontSize: '0.72rem', background: 'rgba(0, 240, 255, 0.15)', color: '#00f0ff', border: '1px solid #00f0ff'}}>⚡ Cache SHA-256</span>;
+    }
+    if (src === 'deterministic_local_fallback') {
+      return <span style={{padding: '2px 6px', borderRadius: '4px', fontSize: '0.72rem', background: 'rgba(180, 133, 255, 0.2)', color: '#b485ff', border: '1px solid #b485ff'}}>⚙️ Fallback Local</span>;
+    }
+    return <span style={{padding: '2px 6px', borderRadius: '4px', fontSize: '0.72rem', background: 'rgba(39, 201, 63, 0.2)', color: '#27c93f', border: '1px solid #27c93f'}}>🌐 Jev API</span>;
+  };
+
   return (
     <div style={{color: '#fff', marginTop: '2rem'}}>
       {/* SEÇÃO GATE 04: JEV AUTONOMOUS DIAGNOSTICS & MITIGATION */}
@@ -374,24 +394,64 @@ function HistoryView() {
           </div>
         ) : (
           <div className="glass-card" style={{overflowX: 'auto', padding: '0.5rem'}}>
-            <table style={{width: '100%', textAlign: 'left', borderCollapse: 'collapse', fontSize: '0.88rem'}}>
+            <table style={{width: '100%', textAlign: 'left', borderCollapse: 'collapse', fontSize: '0.85rem'}}>
               <thead>
                 <tr style={{borderBottom: '1px solid rgba(255,255,255,0.1)'}}>
                   <th style={{padding: '10px'}}>Hora</th>
+                  <th style={{padding: '10px'}}>Snapshot / Origem</th>
                   <th style={{padding: '10px'}}>Serviço AfixGraf</th>
-                  <th style={{padding: '10px'}}>Causa Raiz Identificada (Jev)</th>
-                  <th style={{padding: '10px'}}>Mitigação Autônoma Aplicada</th>
+                  <th style={{padding: '10px'}}>Origem Jev</th>
+                  <th style={{padding: '10px'}}>Causa Raiz (Jev)</th>
+                  <th style={{padding: '10px'}}>Mitigação Sugerida (Jev)</th>
+                  <th style={{padding: '10px'}}>Mitigação Executada (Host)</th>
                   <th style={{padding: '10px'}}>Veredito Humano</th>
                 </tr>
               </thead>
               <tbody>
                 {diagnosticsData.map((d, i) => (
-                  <tr key={i} style={{borderBottom: '1px solid rgba(255,255,255,0.05)'}}>
+                  <tr key={i} style={{borderBottom: '1px solid rgba(255,255,255,0.05)', background: d.status === 'UNAVAILABLE' ? 'rgba(255, 95, 86, 0.05)' : 'transparent'}}>
                     <td style={{padding: '10px', color: '#b485ff'}}>{d.timestamp}</td>
-                    <td style={{padding: '10px', fontWeight: 'bold'}}>{d.serviceLabel}</td>
-                    <td style={{padding: '10px', color: '#ffbd2e'}}>{d.rootCauseHuman}</td>
-                    <td style={{padding: '10px', color: '#00f0ff'}}>{d.mitigationHuman}</td>
-                    <td style={{padding: '10px', color: '#27c93f', fontSize: '0.85rem'}}>{d.humanSummary}</td>
+                    <td style={{padding: '10px'}}>
+                      <div style={{fontWeight: 'bold', color: '#fff'}}>#{d.snapshotId || '—'}</div>
+                      <div style={{marginTop: '3px'}}>{renderSampleOriginBadge(d.sampleOrigin)}</div>
+                    </td>
+                    <td style={{padding: '10px', fontWeight: 'bold'}}>
+                      <div>{d.serviceLabel}</div>
+                      <div style={{fontSize: '0.72rem', color: '#8892b0', fontWeight: 'normal'}}>{d.serviceId}</div>
+                    </td>
+                    <td style={{padding: '10px'}}>
+                      {renderJevSourceBadge(d.jevSource, d.cacheHit)}
+                    </td>
+                    <td style={{padding: '10px'}}>
+                      {d.status === 'UNAVAILABLE' ? (
+                        <div>
+                          <div style={{color: '#ff5f56', fontWeight: 'bold'}}>⚠️ Indisponível</div>
+                          <div style={{fontSize: '0.75rem', color: '#ffbd2e', marginTop: '2px'}}>{d.unavailableReason}</div>
+                        </div>
+                      ) : (
+                        <div>
+                          <div style={{color: '#ffbd2e', fontWeight: 'bold'}}>{d.rootCauseHuman}</div>
+                          <div style={{fontSize: '0.72rem', color: '#8892b0'}}>{d.rootCauseCategory}</div>
+                        </div>
+                      )}
+                    </td>
+                    <td style={{padding: '10px', color: '#00f0ff'}}>
+                      {d.status === 'UNAVAILABLE' ? (
+                        <span style={{color: '#8892b0', fontStyle: 'italic'}}>— Nenhuma</span>
+                      ) : (
+                        <div>
+                          <div>{d.mitigationSuggestedHuman || d.mitigationHuman}</div>
+                          <div style={{fontSize: '0.72rem', color: '#8892b0'}}>{d.mitigationSuggested || d.mitigationApplied}</div>
+                        </div>
+                      )}
+                    </td>
+                    <td style={{padding: '10px', color: '#27c93f'}}>
+                      <div>{d.mitigationExecutedHuman || 'Cooldown defensivo ativo'}</div>
+                      <div style={{fontSize: '0.72rem', color: '#8892b0'}}>{d.mitigationExecuted || 'DEFENSIVE_COOLDOWN'}</div>
+                    </td>
+                    <td style={{padding: '10px', color: d.status === 'UNAVAILABLE' ? '#ffbd2e' : '#27c93f', fontSize: '0.82rem'}}>
+                      {d.humanSummary}
+                    </td>
                   </tr>
                 ))}
               </tbody>

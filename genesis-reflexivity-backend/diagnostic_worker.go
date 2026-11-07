@@ -6,22 +6,33 @@ import (
 	"fmt"
 	"log"
 	"os/exec"
+	"strings"
 	"sync"
 	"time"
 )
 
 type DiagnosticRecord struct {
-	ID                       int64     `json:"id"`
-	ServiceID                string    `json:"serviceId"`
-	ServiceLabel             string    `json:"serviceLabel"`
-	RootCauseCategory        string    `json:"rootCauseCategory"`
-	RootCauseHuman           string    `json:"rootCauseHuman"`
-	MitigationApplied        string    `json:"mitigationApplied"`
-	MitigationHuman          string    `json:"mitigationHuman"`
-	NeedsDestructiveRestart  float64   `json:"needsDestructiveRestart"`
-	DiagnosticConfidence     string    `json:"diagnosticConfidence"`
-	HumanSummary             string    `json:"humanSummary"`
-	Timestamp                string    `json:"timestamp"`
+	ID                       int64   `json:"id"`
+	ServiceID                string  `json:"serviceId"`
+	ServiceLabel             string  `json:"serviceLabel"`
+	SnapshotID               int64   `json:"snapshotId"`
+	SampleOrigin             string  `json:"sampleOrigin"`      // "PROBE" ou "SIMULATION"
+	SampleOriginHuman        string  `json:"sampleOriginHuman"` // "📡 Sonda Real" ou "🧪 Simulação"
+	JevSource                string  `json:"jevSource"`          // "typesafe_jev_api", "cache_sha256", "fail_open_advisory", etc.
+	Status                   string  `json:"status"`             // "AVAILABLE" ou "UNAVAILABLE"
+	UnavailableReason        string  `json:"unavailableReason"`  // Detalhe se status == UNAVAILABLE
+	RootCauseCategory        string  `json:"rootCauseCategory"`
+	RootCauseHuman           string  `json:"rootCauseHuman"`
+	MitigationSuggested      string  `json:"mitigationSuggested"`
+	MitigationSuggestedHuman string  `json:"mitigationSuggestedHuman"`
+	MitigationExecuted       string  `json:"mitigationExecuted"`
+	MitigationExecutedHuman  string  `json:"mitigationExecutedHuman"`
+	MitigationApplied        string  `json:"mitigationApplied"` // Legado para retrocompatibilidade
+	MitigationHuman          string  `json:"mitigationHuman"`   // Legado para retrocompatibilidade
+	NeedsDestructiveRestart  float64 `json:"needsDestructiveRestart"`
+	DiagnosticConfidence     string  `json:"diagnosticConfidence"`
+	HumanSummary             string  `json:"humanSummary"`
+	Timestamp                string  `json:"timestamp"`
 }
 
 var lastDiagnostics = struct {
@@ -50,6 +61,44 @@ func getHumanServiceLabel(serviceId string) (string, string) {
 	}
 }
 
+// translateReasonToHuman traduz razões técnicas de indisponibilidade para operadores humanos
+func translateReasonToHuman(reason string) string {
+	if reason == "" {
+		return "Indisponibilidade momentânea na camada de inferência"
+	}
+	if reason == "NO_TYPESAFE_API_KEY" {
+		return "Chave TypeSafe AI não configurada no ambiente"
+	}
+	if strings.Contains(reason, "fail_open_advisory") || strings.Contains(reason, "FAIL_OPEN_ADVISORY") {
+		return "Modo Fail-Open de Proteção (Advisory ativo sem bloqueio)"
+	}
+	if strings.HasPrefix(reason, "API_ERROR:") {
+		return fmt.Sprintf("Falha no endpoint da API Jev (%s)", strings.TrimPrefix(reason, "API_ERROR: "))
+	}
+	if reason == "RESPOSTA_INCOMPLETA_JEV" || strings.Contains(reason, "RESPOSTA_INCOMPLETA") {
+		return "Resposta parcial ou campos essenciais ausentes no retorno do JEV"
+	}
+	return reason
+}
+
+// translateMitigationToHuman converte os tiers de mitigação para explicações claras
+func translateMitigationToHuman(mitigation string) string {
+	switch mitigation {
+	case "TIER_1_SHED_LOAD":
+		return "Alívio de Carga: Frequência de checagem espaçada para não sobrecarregar o host."
+	case "TIER_2_RESET_POOL":
+		return "Reciclagem do pool de conexões SQLite efetuada sem desligar o sistema."
+	case "TIER_3_DEGRADE_GRACEFUL":
+		return "Degradação Graciosa: Consultas atendidas a partir do cache relacional imutável."
+	case "TIER_4_RESTART_LAST_RESORT":
+		return "Reinicialização de segurança executada como último recurso extremo."
+	case "NONE":
+		return "Nenhuma mitigação aplicável (diagnóstico indisponível)."
+	default:
+		return "Nenhuma intervenção necessária: o serviço está saudável no seu ritmo normal."
+	}
+}
+
 // translateDiagnosticToHuman converte os códigos matemáticos do Jev em explicações em bom português
 func translateDiagnosticToHuman(category, mitigation string, restartProb float64) (string, string, string) {
 	causeHuman := ""
@@ -62,26 +111,18 @@ func translateDiagnosticToHuman(category, mitigation string, restartProb float64
 		causeHuman = "Aumento monótono de consumo de memória ou recursos do sistema."
 	case "UNEXPECTED_TRAFFIC_SURGE":
 		causeHuman = "Pico súbito de requisições de clientes sem erro de protocolo."
+	case "DIAGNOSTIC_UNAVAILABLE":
+		causeHuman = "Diagnóstico Indisponível pelo Jev."
 	default:
 		causeHuman = "Operação sob regime de carga pesada sem anomalia crítica."
 	}
 
-	mitigHuman := ""
-	switch mitigation {
-	case "TIER_1_SHED_LOAD":
-		mitigHuman = "Alívio de Carga: Frequência de checagem espaçada para não sobrecarregar o host."
-	case "TIER_2_RESET_POOL":
-		mitigHuman = "Reciclagem do pool de conexões SQLite efetuada sem desligar o sistema."
-	case "TIER_3_DEGRADE_GRACEFUL":
-		mitigHuman = "Degradação Graciosa: Consultas atendidas a partir do cache relacional imutável."
-	case "TIER_4_RESTART_LAST_RESORT":
-		mitigHuman = "Reinicialização de segurança executada como último recurso extremo."
-	default:
-		mitigHuman = "Nenhuma intervenção necessária: o serviço está saudável no seu ritmo normal."
-	}
+	mitigHuman := translateMitigationToHuman(mitigation)
 
 	summary := ""
-	if restartProb < 0.40 {
+	if restartProb < 0 {
+		summary = "⚠️ Diagnóstico indisponível: o sistema mantém proteção passiva sem reinício."
+	} else if restartProb < 0.40 {
 		summary = fmt.Sprintf("✅ REINÍCIO VETADO PELO JEV (Risco de dano: %.0f%%). A falha é transitória e o restart apenas causaria queda de operadores.", (1.0-restartProb)*100.0)
 	} else {
 		summary = fmt.Sprintf("⚠️ Reinício avaliado como provável necessidade (Probabilidade: %.0f%%).", restartProb*100.0)
@@ -90,8 +131,67 @@ func translateDiagnosticToHuman(category, mitigation string, restartProb float64
 	return causeHuman, mitigHuman, summary
 }
 
+// loadHistoricalDiagnostics restaura os últimos 50 eventos do SQLite na inicialização
+func loadHistoricalDiagnostics() {
+	dbMutex.Lock()
+	defer dbMutex.Unlock()
+
+	rows, err := db.Query(`SELECT id, service_id, snapshot_id, root_cause, mitigation_applied, needs_restart_noul, confidence_level, diagnostics_payload_json, 
+		COALESCE(sample_origin, 'SIMULATION'), COALESCE(jev_source, 'typesafe_jev_api'), COALESCE(status, 'AVAILABLE'), 
+		COALESCE(unavailable_reason, ''), COALESCE(mitigation_suggested, ''), COALESCE(mitigation_executed, ''), strftime('%H:%M:%S', created_at)
+		FROM relational_diagnostics_events ORDER BY id DESC LIMIT 50`)
+	if err != nil {
+		log.Println("Gate 04 - Aviso ao carregar histórico inicial:", err)
+		return
+	}
+	defer rows.Close()
+
+	var records []DiagnosticRecord
+	for rows.Next() {
+		var r DiagnosticRecord
+		var timeStr string
+		var rawJson string
+		err := rows.Scan(&r.ID, &r.ServiceID, &r.SnapshotID, &r.RootCauseCategory, &r.MitigationApplied, &r.NeedsDestructiveRestart,
+			&r.DiagnosticConfidence, &rawJson, &r.SampleOrigin, &r.JevSource, &r.Status, &r.UnavailableReason, &r.MitigationSuggested, &r.MitigationExecuted, &timeStr)
+		if err != nil {
+			continue
+		}
+		r.Timestamp = timeStr
+		label, _ := getHumanServiceLabel(r.ServiceID)
+		r.ServiceLabel = label
+		if r.SampleOrigin == "PROBE" {
+			r.SampleOriginHuman = "📡 Sonda Real"
+		} else {
+			r.SampleOriginHuman = "🧪 Simulação"
+		}
+
+		if r.Status == "UNAVAILABLE" {
+			r.RootCauseHuman = fmt.Sprintf("⚠️ Diagnóstico Indisponível (%s)", translateReasonToHuman(r.UnavailableReason))
+			r.MitigationSuggestedHuman = "Nenhuma sugestão disponível"
+			r.MitigationExecutedHuman = "Executado: Cooldown passivo ativo (sem restart)"
+			r.HumanSummary = fmt.Sprintf("⚠️ DIAGNÓSTICO INDISPONÍVEL: %s", translateReasonToHuman(r.UnavailableReason))
+		} else {
+			causeHuman, _, summary := translateDiagnosticToHuman(r.RootCauseCategory, r.MitigationSuggested, r.NeedsDestructiveRestart)
+			r.RootCauseHuman = causeHuman
+			r.MitigationSuggestedHuman = translateMitigationToHuman(r.MitigationSuggested)
+			if r.NeedsDestructiveRestart < 0.40 {
+				r.MitigationExecutedHuman = "Executado: Reinício vetado pelo sistema imune (cooldown 60s)"
+			} else {
+				r.MitigationExecutedHuman = "Executado: Alerta em modo sombra emitido ao operador"
+			}
+			r.HumanSummary = summary
+		}
+		r.MitigationHuman = r.MitigationSuggestedHuman
+		records = append(records, r)
+	}
+
+	cachedDiagnostics.Lock()
+	cachedDiagnostics.records = records
+	cachedDiagnostics.Unlock()
+}
+
 // dispatchGate04Diagnostics invoca o Jev System-One em modo assíncrono via ponte isolada
-func dispatchGate04Diagnostics(rs RelationalState, shockLevel string, relShock float64, dirDrift float64) {
+func dispatchGate04Diagnostics(rs RelationalState, snapshotID int64, shockLevel string, relShock float64, dirDrift float64) {
 	// Regra Argon: Ignora serviços naturalmente pesados se não houver choque ou falha real
 	if rs.State != "DENY" && rs.SampleOk == 1 && shockLevel == "LOW" && dirDrift < 15.0 {
 		return
@@ -114,16 +214,26 @@ func dispatchGate04Diagnostics(rs RelationalState, shockLevel string, relShock f
 			}
 		}()
 
+		// Identificação precisa da origem da amostra
+		sampleOrigin := "SIMULATION"
+		sampleOriginHuman := "🧪 Simulação"
+		if rs.EntropySource == "REAL_NETWORK" {
+			sampleOrigin = "PROBE"
+			sampleOriginHuman = "📡 Sonda Real"
+		}
+
 		statePayload := map[string]interface{}{
-			"service_id":       rs.ServiceID,
-			"latency_ms":       rs.LatencyMs,
-			"friction":         rs.Friction,
-			"ck_score":         rs.CkScore,
-			"alpha":            rs.AlphaAtTime,
-			"relational_shock": relShock,
+			"service_id":        rs.ServiceID,
+			"snapshot_id":       snapshotID,
+			"sample_origin":     sampleOrigin,
+			"latency_ms":        rs.LatencyMs,
+			"friction":          rs.Friction,
+			"ck_score":          rs.CkScore,
+			"alpha":             rs.AlphaAtTime,
+			"relational_shock":  relShock,
 			"directional_drift": dirDrift,
-			"error_kind":       rs.ErrorKind,
-			"sample_ok":        rs.SampleOk,
+			"error_kind":        rs.ErrorKind,
+			"sample_ok":         rs.SampleOk,
 		}
 
 		questions := map[string]interface{}{
@@ -145,9 +255,9 @@ func dispatchGate04Diagnostics(rs RelationalState, shockLevel string, relShock f
 				"type":         "choice",
 				"instructions": "Selecione o nivel de mitigacao nao destrutivo mais adequado.",
 				"criteria": map[string]string{
-					"TIER_1_SHED_LOAD": "Espacar intervalo de checagem e reduzir carga sintetica.",
-					"TIER_2_RESET_POOL": "Executar checkpoint passivo no banco de dados SQLite.",
-					"TIER_3_DEGRADE_GRACEFUL": "Servir respostas pelo cache relacional local.",
+					"TIER_1_SHED_LOAD":          "Espacar intervalo de checagem e reduzir carga sintetica.",
+					"TIER_2_RESET_POOL":         "Executar checkpoint passivo no banco de dados SQLite.",
+					"TIER_3_DEGRADE_GRACEFUL":   "Servir respostas pelo cache relacional local.",
 					"TIER_4_RESTART_LAST_RESORT": "Reiniciar servico apenas como ultimo recurso comprovado.",
 				},
 			},
@@ -170,66 +280,152 @@ func dispatchGate04Diagnostics(rs RelationalState, shockLevel string, relShock f
 		cmd := exec.Command(pythonPath, bridgeScript)
 		cmd.Stdin = bytes.NewReader(reqBytes)
 		var outBuf bytes.Buffer
+		var errBuf bytes.Buffer
 		cmd.Stdout = &outBuf
+		cmd.Stderr = &errBuf
 
-		if err := cmd.Run(); err != nil {
-			log.Println("Gate 04 - Falha ao consultar Jev via CLI bridge:", err)
-			return
-		}
+		cmdErr := cmd.Run()
 
 		var bridgeResp struct {
-			Ok      bool                   `json:"ok"`
-			Answers map[string]interface{} `json:"answers"`
-		}
-		if err := json.Unmarshal(outBuf.Bytes(), &bridgeResp); err != nil || !bridgeResp.Ok {
-			return
+			Ok             bool                   `json:"ok"`
+			Source         string                 `json:"source"`
+			FallbackReason string                 `json:"fallback_reason"`
+			Error          string                 `json:"error"`
+			Answers        map[string]interface{} `json:"answers"`
+			CacheHit       bool                   `json:"cache_hit"`
 		}
 
-		rootCause := "UPSTREAM_NETWORK_TIMEOUT"
-		if rcObj, ok := bridgeResp.Answers["root_cause_category"].(map[string]interface{}); ok {
-			if ch, ok := rcObj["choice"].(string); ok {
-				rootCause = ch
+		status := "AVAILABLE"
+		unavailableReason := ""
+		jevSource := "typesafe_jev_api"
+
+		if cmdErr != nil {
+			status = "UNAVAILABLE"
+			unavailableReason = fmt.Sprintf("FALHA_EXECUCAO_CLI_BRIDGE: %v", cmdErr)
+			jevSource = "cli_bridge_error"
+		} else if err := json.Unmarshal(outBuf.Bytes(), &bridgeResp); err != nil {
+			status = "UNAVAILABLE"
+			unavailableReason = "ERRO_DESERIALIZACAO_JSON"
+			jevSource = "raw_output_error"
+		} else if !bridgeResp.Ok {
+			status = "UNAVAILABLE"
+			unavailableReason = bridgeResp.Error
+			if unavailableReason == "" {
+				unavailableReason = "BRIDGE_ERROR_RESPONSE"
+			}
+			jevSource = "bridge_rejected"
+		} else if bridgeResp.Source == "fail_open_advisory" {
+			// Protocolo de Honestidade: Tratar fail_open_advisory como diagnóstico indisponível, sem inventar causa raiz!
+			status = "UNAVAILABLE"
+			unavailableReason = bridgeResp.FallbackReason
+			if unavailableReason == "" {
+				unavailableReason = "FAIL_OPEN_ADVISORY"
+			}
+			jevSource = "fail_open_advisory"
+		} else {
+			jevSource = bridgeResp.Source
+			if bridgeResp.CacheHit {
+				jevSource = "cache_sha256"
 			}
 		}
 
-		needsRestart := 0.10
-		if nrObj, ok := bridgeResp.Answers["needs_destructive_restart"].(map[string]interface{}); ok {
-			if nl, ok := nrObj["noul"].(float64); ok {
-				needsRestart = nl
-			}
-		}
+		// Checar completude das respostas do JEV
+		var rcObj, nrObj, mtObj map[string]interface{}
+		var rootCause, mitigationTier string
+		var needsRestart float64 = -1.0
 
-		mitigationTier := "TIER_1_SHED_LOAD"
-		if mtObj, ok := bridgeResp.Answers["mitigation_tier"].(map[string]interface{}); ok {
-			if ch, ok := mtObj["choice"].(string); ok {
-				mitigationTier = ch
+		if status == "AVAILABLE" {
+			var okRc, okNr, okMt bool
+			rcObj, okRc = bridgeResp.Answers["root_cause_category"].(map[string]interface{})
+			nrObj, okNr = bridgeResp.Answers["needs_destructive_restart"].(map[string]interface{})
+			mtObj, okMt = bridgeResp.Answers["mitigation_tier"].(map[string]interface{})
+
+			if !okRc || !okNr || !okMt {
+				status = "UNAVAILABLE"
+				unavailableReason = "RESPOSTA_INCOMPLETA_JEV (campos obrigatórios ausentes)"
+			} else {
+				if ch, ok := rcObj["choice"].(string); ok && ch != "" {
+					rootCause = ch
+				} else {
+					status = "UNAVAILABLE"
+					unavailableReason = "RESPOSTA_INCOMPLETA_JEV (campo root_cause_category inválido)"
+				}
+
+				if nl, ok := nrObj["noul"].(float64); ok {
+					needsRestart = nl
+				} else {
+					status = "UNAVAILABLE"
+					unavailableReason = "RESPOSTA_INCOMPLETA_JEV (campo needs_destructive_restart inválido)"
+				}
+
+				if ch, ok := mtObj["choice"].(string); ok && ch != "" {
+					mitigationTier = ch
+				} else {
+					status = "UNAVAILABLE"
+					unavailableReason = "RESPOSTA_INCOMPLETA_JEV (campo mitigation_tier inválido)"
+				}
 			}
 		}
 
 		label, _ := getHumanServiceLabel(rs.ServiceID)
-		causeHuman, mitigHuman, summary := translateDiagnosticToHuman(rootCause, mitigationTier, needsRestart)
+		var causeHuman, mitigationSuggested, mitigationSuggestedHuman, mitigationExecuted, mitigationExecutedHuman, summary string
 
-		// Persiste no SQLite
+		if status == "UNAVAILABLE" {
+			rootCause = "DIAGNOSTIC_UNAVAILABLE"
+			causeHuman = fmt.Sprintf("⚠️ Diagnóstico Indisponível (%s)", translateReasonToHuman(unavailableReason))
+			mitigationSuggested = "NONE"
+			mitigationSuggestedHuman = "Nenhuma recomendação disponível pelo JEV"
+			mitigationExecuted = "DEFENSIVE_COOLDOWN"
+			mitigationExecutedHuman = "Executado: Cooldown defensivo ativo (modo passivo sem reinício cego)"
+			summary = fmt.Sprintf("⚠️ DIAGNÓSTICO INDISPONÍVEL: %s. Operando em regime de proteção passiva.", translateReasonToHuman(unavailableReason))
+		} else {
+			mitigationSuggested = mitigationTier
+			mitigationSuggestedHuman = translateMitigationToHuman(mitigationTier)
+
+			if needsRestart < 0.40 {
+				mitigationExecuted = "VETO_RESTART_AND_PACE"
+				mitigationExecutedHuman = "Executado: Reinício vetado pelo sistema imune (cooldown 60s aplicado)"
+			} else {
+				mitigationExecuted = "ALERT_OPERATOR_SHADOW"
+				mitigationExecutedHuman = "Executado: Alerta emitido em modo sombra (sem reinício automático)"
+			}
+
+			ch, _, sum := translateDiagnosticToHuman(rootCause, mitigationSuggested, needsRestart)
+			causeHuman = ch
+			summary = sum
+		}
+
+		// Persiste no SQLite com rastreabilidade completa (Snapshot ID real, Origem da Amostra, Origem do Jev, Status)
 		dbMutex.Lock()
 		db.Exec(`INSERT INTO relational_diagnostics_events 
-			(service_id, snapshot_id, root_cause, mitigation_applied, needs_restart_noul, confidence_level, diagnostics_payload_json) 
-			VALUES (?, ?, ?, ?, ?, ?, ?)`,
-			rs.ServiceID, rs.ObservedAtMs, rootCause, mitigationTier, needsRestart, "HIGH", summary)
+			(service_id, snapshot_id, root_cause, mitigation_applied, needs_restart_noul, confidence_level, diagnostics_payload_json, sample_origin, jev_source, status, unavailable_reason, mitigation_suggested, mitigation_executed) 
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			rs.ServiceID, snapshotID, rootCause, mitigationSuggested, needsRestart, "HIGH", summary, sampleOrigin, jevSource, status, unavailableReason, mitigationSuggested, mitigationExecuted)
 		dbMutex.Unlock()
 
 		// Mantém histórico em memória para o endpoint HTTP da UI
 		rec := DiagnosticRecord{
-			ID:                      time.Now().UnixNano(),
-			ServiceID:               rs.ServiceID,
-			ServiceLabel:            label,
-			RootCauseCategory:       rootCause,
-			RootCauseHuman:          causeHuman,
-			MitigationApplied:       mitigationTier,
-			MitigationHuman:         mitigHuman,
-			NeedsDestructiveRestart: needsRestart,
-			DiagnosticConfidence:    "HIGH",
-			HumanSummary:            summary,
-			Timestamp:               time.Now().Format("15:04:05"),
+			ID:                       time.Now().UnixNano(),
+			ServiceID:                rs.ServiceID,
+			ServiceLabel:             label,
+			SnapshotID:               snapshotID,
+			SampleOrigin:             sampleOrigin,
+			SampleOriginHuman:        sampleOriginHuman,
+			JevSource:                jevSource,
+			Status:                   status,
+			UnavailableReason:        unavailableReason,
+			RootCauseCategory:        rootCause,
+			RootCauseHuman:           causeHuman,
+			MitigationSuggested:      mitigationSuggested,
+			MitigationSuggestedHuman: mitigationSuggestedHuman,
+			MitigationExecuted:       mitigationExecuted,
+			MitigationExecutedHuman:  mitigationExecutedHuman,
+			MitigationApplied:        mitigationSuggested,
+			MitigationHuman:          mitigationSuggestedHuman,
+			NeedsDestructiveRestart:  needsRestart,
+			DiagnosticConfidence:     "HIGH",
+			HumanSummary:             summary,
+			Timestamp:                time.Now().Format("15:04:05"),
 		}
 
 		cachedDiagnostics.Lock()
@@ -239,7 +435,7 @@ func dispatchGate04Diagnostics(rs RelationalState, shockLevel string, relShock f
 		}
 		cachedDiagnostics.Unlock()
 
-		log.Printf("Gate 04 [JEV DIAGNOSTIC]: Serviço=%s | Causa=%s | Mitigação=%s | RestartProb=%.2f", rs.ServiceID, rootCause, mitigationTier, needsRestart)
+		log.Printf("Gate 04 [JEV]: Snapshot=#%d (%s) | Serviço=%s | Status=%s | Origem=%s | Causa=%s | Sugerida=%s | Executada=%s",
+			snapshotID, sampleOrigin, rs.ServiceID, status, jevSource, rootCause, mitigationSuggested, mitigationExecuted)
 	}()
 }
-
