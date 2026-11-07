@@ -469,10 +469,18 @@ function HistoryView() {
                       </td>
                       <td style={{padding: '10px', fontSize: '0.82rem', color: d.status === 'UNAVAILABLE' ? '#ffbd2e' : d.status === 'UNKNOWN' ? '#8892b0' : '#27c93f'}}>
                         <div>{d.humanSummary}</div>
-                        {d.diagnosticConfidence && d.diagnosticConfidence !== 'N/A' && d.diagnosticConfidence !== 'UNKNOWN' && (
+                        {d.diagnosticConfidence && (
                           <div style={{marginTop: '4px'}}>
-                            <span style={{display: 'inline-block', padding: '1px 6px', borderRadius: '4px', fontSize: '0.70rem', background: 'rgba(0, 240, 255, 0.15)', color: '#00f0ff', border: '1px solid rgba(0, 240, 255, 0.3)'}}>
-                              Confiança Jev: {d.diagnosticConfidence}
+                            <span style={{
+                              display: 'inline-block',
+                              padding: '1px 6px',
+                              borderRadius: '4px',
+                              fontSize: '0.70rem',
+                              background: d.diagnosticConfidence === 'não informada' ? 'rgba(136, 146, 176, 0.15)' : 'rgba(0, 240, 255, 0.15)',
+                              color: d.diagnosticConfidence === 'não informada' ? '#8892b0' : '#00f0ff',
+                              border: d.diagnosticConfidence === 'não informada' ? '1px solid rgba(136, 146, 176, 0.3)' : '1px solid rgba(0, 240, 255, 0.3)'
+                            }}>
+                              {d.diagnosticConfidence === 'não informada' ? 'Confiança: não informada' : d.diagnosticConfidence}
                             </span>
                           </div>
                         )}

@@ -173,7 +173,7 @@ func loadHistoricalDiagnostics() {
 			if r.UnavailableReason == "" {
 				r.UnavailableReason = "REGISTRO_LEGADO_ANTERIOR_AO_GATE04"
 			}
-			r.DiagnosticConfidence = "UNKNOWN"
+			r.DiagnosticConfidence = "não informada"
 			r.RootCauseHuman = fmt.Sprintf("Registro Legado: %s", r.RootCauseCategory)
 			r.MitigationSuggestedHuman = "Histórico legado sem recomendação desacoplada"
 			r.MitigationExecutedHuman = "Modo Sombra Passivo: Ação histórica registrada como " + r.MitigationApplied
@@ -201,6 +201,13 @@ func loadHistoricalDiagnostics() {
 				}
 				r.HumanSummary = summary
 			}
+		}
+
+		// Normalização rigorosa para a Regra de Evidências (Critérios Canônicos de Aceitação)
+		if r.DiagnosticConfidence == "" || r.DiagnosticConfidence == "UNKNOWN" || r.DiagnosticConfidence == "N/A" || r.DiagnosticConfidence == "HIGH" || r.DiagnosticConfidence == "MÉDIA" || r.DiagnosticConfidence == "LOW" {
+			r.DiagnosticConfidence = "não informada"
+		} else if !strings.HasPrefix(r.DiagnosticConfidence, "confiança declarada pelo JEV:") && r.DiagnosticConfidence != "não informada" {
+			r.DiagnosticConfidence = fmt.Sprintf("confiança declarada pelo JEV: %s", r.DiagnosticConfidence)
 		}
 
 		r.MitigationHuman = r.MitigationSuggestedHuman
@@ -351,11 +358,11 @@ func dispatchGate04Diagnostics(rs RelationalState, snapshotID int64, shockLevel 
 			}
 		}
 
-		// Checar completude das respostas do JEV e extrair confiança calibrada real
+		// Checar completude das respostas do JEV e extrair confiança declarada pelo JEV
 		var rcObj, nrObj, mtObj map[string]interface{}
 		var rootCause, mitigationTier string
 		var needsRestart float64 = -1.0
-		confidenceLevel := "N/A"
+		confidenceLevel := "não informada"
 
 		if status == "AVAILABLE" {
 			var okRc, okNr, okMt bool
@@ -366,7 +373,7 @@ func dispatchGate04Diagnostics(rs RelationalState, snapshotID int64, shockLevel 
 			if !okRc || !okNr || !okMt {
 				status = "UNAVAILABLE"
 				unavailableReason = "RESPOSTA_INCOMPLETA_JEV (campos obrigatórios ausentes)"
-				confidenceLevel = "N/A"
+				confidenceLevel = "não informada"
 			} else {
 				if ch, ok := rcObj["choice"].(string); ok && ch != "" {
 					rootCause = ch
@@ -389,13 +396,13 @@ func dispatchGate04Diagnostics(rs RelationalState, snapshotID int64, shockLevel 
 					unavailableReason = "RESPOSTA_INCOMPLETA_JEV (campo mitigation_tier inválido)"
 				}
 
-				// Extrai a confiança real retornada pelo Jev System-One
+				// Extrai e rotula formalmente a confiança declarada pelo JEV
 				if confVal, ok := rcObj["confidence"].(float64); ok {
-					confidenceLevel = fmt.Sprintf("%.0f%%", confVal*100.0)
+					confidenceLevel = fmt.Sprintf("confiança declarada pelo JEV: %.0f%%", confVal*100.0)
 				} else if confStr, ok := rcObj["confidence"].(string); ok && confStr != "" {
-					confidenceLevel = confStr
+					confidenceLevel = fmt.Sprintf("confiança declarada pelo JEV: %s", confStr)
 				} else {
-					confidenceLevel = "CALIBRATED"
+					confidenceLevel = "não informada"
 				}
 			}
 		}
@@ -411,7 +418,7 @@ func dispatchGate04Diagnostics(rs RelationalState, snapshotID int64, shockLevel 
 			mitigationExecuted = "PASSIVE_SHADOW_MONITORING"
 			mitigationExecutedHuman = "Modo Sombra Passivo: Sondagem de 1s contínua sem intervenção destrutiva no host"
 			summary = fmt.Sprintf("⚠️ DIAGNÓSTICO INDISPONÍVEL: %s. Operando em regime de proteção passiva.", translateReasonToHuman(unavailableReason))
-			confidenceLevel = "N/A"
+			confidenceLevel = "não informada"
 		} else {
 			mitigationSuggested = mitigationTier
 			mitigationSuggestedHuman = translateMitigationToHuman(mitigationTier)
