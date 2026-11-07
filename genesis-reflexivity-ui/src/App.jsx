@@ -356,7 +356,10 @@ function HistoryView() {
     if (origin === 'PROBE') {
       return <span style={{padding: '2px 6px', borderRadius: '4px', fontSize: '0.72rem', background: 'rgba(0, 240, 255, 0.15)', color: '#00f0ff', border: '1px solid rgba(0, 240, 255, 0.4)'}}>📡 Sonda Real</span>;
     }
-    return <span style={{padding: '2px 6px', borderRadius: '4px', fontSize: '0.72rem', background: 'rgba(180, 133, 255, 0.15)', color: '#b485ff', border: '1px solid rgba(180, 133, 255, 0.4)'}}>🧪 Simulação</span>;
+    if (origin === 'SIMULATION') {
+      return <span style={{padding: '2px 6px', borderRadius: '4px', fontSize: '0.72rem', background: 'rgba(180, 133, 255, 0.15)', color: '#b485ff', border: '1px solid rgba(180, 133, 255, 0.4)'}}>🧪 Simulação</span>;
+    }
+    return <span style={{padding: '2px 6px', borderRadius: '4px', fontSize: '0.72rem', background: 'rgba(136, 146, 176, 0.15)', color: '#8892b0', border: '1px solid rgba(136, 146, 176, 0.4)'}}>❓ Desconhecido (Legado)</span>;
   };
 
   const renderJevSourceBadge = (src, hit) => {
@@ -368,6 +371,9 @@ function HistoryView() {
     }
     if (src === 'deterministic_local_fallback') {
       return <span style={{padding: '2px 6px', borderRadius: '4px', fontSize: '0.72rem', background: 'rgba(180, 133, 255, 0.2)', color: '#b485ff', border: '1px solid #b485ff'}}>⚙️ Fallback Local</span>;
+    }
+    if (src === 'LEGACY_UNKNOWN' || src === '' || !src) {
+      return <span style={{padding: '2px 6px', borderRadius: '4px', fontSize: '0.72rem', background: 'rgba(136, 146, 176, 0.15)', color: '#8892b0', border: '1px solid #8892b0'}}>📜 Legado</span>;
     }
     return <span style={{padding: '2px 6px', borderRadius: '4px', fontSize: '0.72rem', background: 'rgba(39, 201, 63, 0.2)', color: '#27c93f', border: '1px solid #27c93f'}}>🌐 Jev API</span>;
   };
@@ -408,52 +414,72 @@ function HistoryView() {
                 </tr>
               </thead>
               <tbody>
-                {diagnosticsData.map((d, i) => (
-                  <tr key={i} style={{borderBottom: '1px solid rgba(255,255,255,0.05)', background: d.status === 'UNAVAILABLE' ? 'rgba(255, 95, 86, 0.05)' : 'transparent'}}>
-                    <td style={{padding: '10px', color: '#b485ff'}}>{d.timestamp}</td>
-                    <td style={{padding: '10px'}}>
-                      <div style={{fontWeight: 'bold', color: '#fff'}}>#{d.snapshotId || '—'}</div>
-                      <div style={{marginTop: '3px'}}>{renderSampleOriginBadge(d.sampleOrigin)}</div>
-                    </td>
-                    <td style={{padding: '10px', fontWeight: 'bold'}}>
-                      <div>{d.serviceLabel}</div>
-                      <div style={{fontSize: '0.72rem', color: '#8892b0', fontWeight: 'normal'}}>{d.serviceId}</div>
-                    </td>
-                    <td style={{padding: '10px'}}>
-                      {renderJevSourceBadge(d.jevSource, d.cacheHit)}
-                    </td>
-                    <td style={{padding: '10px'}}>
-                      {d.status === 'UNAVAILABLE' ? (
-                        <div>
-                          <div style={{color: '#ff5f56', fontWeight: 'bold'}}>⚠️ Indisponível</div>
-                          <div style={{fontSize: '0.75rem', color: '#ffbd2e', marginTop: '2px'}}>{d.unavailableReason}</div>
-                        </div>
-                      ) : (
-                        <div>
-                          <div style={{color: '#ffbd2e', fontWeight: 'bold'}}>{d.rootCauseHuman}</div>
-                          <div style={{fontSize: '0.72rem', color: '#8892b0'}}>{d.rootCauseCategory}</div>
-                        </div>
-                      )}
-                    </td>
-                    <td style={{padding: '10px', color: '#00f0ff'}}>
-                      {d.status === 'UNAVAILABLE' ? (
-                        <span style={{color: '#8892b0', fontStyle: 'italic'}}>— Nenhuma</span>
-                      ) : (
-                        <div>
-                          <div>{d.mitigationSuggestedHuman || d.mitigationHuman}</div>
-                          <div style={{fontSize: '0.72rem', color: '#8892b0'}}>{d.mitigationSuggested || d.mitigationApplied}</div>
-                        </div>
-                      )}
-                    </td>
-                    <td style={{padding: '10px', color: '#27c93f'}}>
-                      <div>{d.mitigationExecutedHuman || 'Cooldown defensivo ativo'}</div>
-                      <div style={{fontSize: '0.72rem', color: '#8892b0'}}>{d.mitigationExecuted || 'DEFENSIVE_COOLDOWN'}</div>
-                    </td>
-                    <td style={{padding: '10px', color: d.status === 'UNAVAILABLE' ? '#ffbd2e' : '#27c93f', fontSize: '0.82rem'}}>
-                      {d.humanSummary}
-                    </td>
-                  </tr>
-                ))}
+                {diagnosticsData.map((d, i) => {
+                  let rowBg = 'transparent';
+                  if (d.status === 'UNAVAILABLE') rowBg = 'rgba(255, 95, 86, 0.05)';
+                  else if (d.status === 'UNKNOWN') rowBg = 'rgba(136, 146, 176, 0.04)';
+
+                  return (
+                    <tr key={i} style={{borderBottom: '1px solid rgba(255,255,255,0.05)', background: rowBg}}>
+                      <td style={{padding: '10px', color: '#b485ff'}}>{d.timestamp}</td>
+                      <td style={{padding: '10px'}}>
+                        <div style={{fontWeight: 'bold', color: '#fff'}}>#{d.snapshotId || '—'}</div>
+                        <div style={{marginTop: '3px'}}>{renderSampleOriginBadge(d.sampleOrigin)}</div>
+                      </td>
+                      <td style={{padding: '10px', fontWeight: 'bold'}}>
+                        <div>{d.serviceLabel}</div>
+                        <div style={{fontSize: '0.72rem', color: '#8892b0', fontWeight: 'normal'}}>{d.serviceId}</div>
+                      </td>
+                      <td style={{padding: '10px'}}>
+                        {renderJevSourceBadge(d.jevSource, d.cacheHit)}
+                      </td>
+                      <td style={{padding: '10px'}}>
+                        {d.status === 'UNAVAILABLE' ? (
+                          <div>
+                            <div style={{color: '#ff5f56', fontWeight: 'bold'}}>⚠️ Indisponível</div>
+                            <div style={{fontSize: '0.75rem', color: '#ffbd2e', marginTop: '2px'}}>{d.unavailableReason}</div>
+                          </div>
+                        ) : d.status === 'UNKNOWN' ? (
+                          <div>
+                            <div style={{color: '#8892b0', fontWeight: 'bold'}}>📜 Histórico Legado</div>
+                            <div style={{fontSize: '0.72rem', color: '#8892b0'}}>{d.rootCauseCategory}</div>
+                          </div>
+                        ) : (
+                          <div>
+                            <div style={{color: '#ffbd2e', fontWeight: 'bold'}}>{d.rootCauseHuman}</div>
+                            <div style={{fontSize: '0.72rem', color: '#8892b0'}}>{d.rootCauseCategory}</div>
+                          </div>
+                        )}
+                      </td>
+                      <td style={{padding: '10px', color: '#00f0ff'}}>
+                        {d.status === 'UNAVAILABLE' ? (
+                          <span style={{color: '#8892b0', fontStyle: 'italic'}}>— Nenhuma</span>
+                        ) : d.status === 'UNKNOWN' ? (
+                          <span style={{color: '#8892b0', fontStyle: 'italic'}}>— Não aplicável (Legado)</span>
+                        ) : (
+                          <div>
+                            <div>{d.mitigationSuggestedHuman || d.mitigationHuman}</div>
+                            <div style={{fontSize: '0.72rem', color: '#8892b0'}}>{d.mitigationSuggested || d.mitigationApplied}</div>
+                          </div>
+                        )}
+                      </td>
+                      <td style={{padding: '10px', color: d.status === 'UNKNOWN' ? '#8892b0' : '#27c93f'}}>
+                        <div style={{fontSize: '0.8rem'}}>{d.mitigationExecutedHuman || 'Modo Sombra Passivo'}</div>
+                        <div style={{fontSize: '0.72rem', color: '#8892b0'}}>{d.mitigationExecuted || 'PASSIVE_SHADOW_MONITORING'}</div>
+                      </td>
+                      <td style={{padding: '10px', fontSize: '0.82rem', color: d.status === 'UNAVAILABLE' ? '#ffbd2e' : d.status === 'UNKNOWN' ? '#8892b0' : '#27c93f'}}>
+                        <div>{d.humanSummary}</div>
+                        {d.diagnosticConfidence && d.diagnosticConfidence !== 'N/A' && d.diagnosticConfidence !== 'UNKNOWN' && (
+                          <div style={{marginTop: '4px'}}>
+                            <span style={{display: 'inline-block', padding: '1px 6px', borderRadius: '4px', fontSize: '0.70rem', background: 'rgba(0, 240, 255, 0.15)', color: '#00f0ff', border: '1px solid rgba(0, 240, 255, 0.3)'}}>
+                              Confiança Jev: {d.diagnosticConfidence}
+                            </span>
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>

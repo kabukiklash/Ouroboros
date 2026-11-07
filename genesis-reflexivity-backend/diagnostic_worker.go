@@ -16,11 +16,11 @@ type DiagnosticRecord struct {
 	ServiceID                string  `json:"serviceId"`
 	ServiceLabel             string  `json:"serviceLabel"`
 	SnapshotID               int64   `json:"snapshotId"`
-	SampleOrigin             string  `json:"sampleOrigin"`      // "PROBE" ou "SIMULATION"
-	SampleOriginHuman        string  `json:"sampleOriginHuman"` // "📡 Sonda Real" ou "🧪 Simulação"
-	JevSource                string  `json:"jevSource"`          // "typesafe_jev_api", "cache_sha256", "fail_open_advisory", etc.
-	Status                   string  `json:"status"`             // "AVAILABLE" ou "UNAVAILABLE"
-	UnavailableReason        string  `json:"unavailableReason"`  // Detalhe se status == UNAVAILABLE
+	SampleOrigin             string  `json:"sampleOrigin"`      // "PROBE", "SIMULATION", "UNKNOWN"
+	SampleOriginHuman        string  `json:"sampleOriginHuman"` // "📡 Sonda Real", "🧪 Simulação", "❓ Origem Desconhecida (Legado)"
+	JevSource                string  `json:"jevSource"`          // "typesafe_jev_api", "cache_sha256", "fail_open_advisory", "LEGACY_UNKNOWN", etc.
+	Status                   string  `json:"status"`             // "AVAILABLE", "UNAVAILABLE", "UNKNOWN"
+	UnavailableReason        string  `json:"unavailableReason"`  // Detalhe se status == UNAVAILABLE ou UNKNOWN
 	RootCauseCategory        string  `json:"rootCauseCategory"`
 	RootCauseHuman           string  `json:"rootCauseHuman"`
 	MitigationSuggested      string  `json:"mitigationSuggested"`
@@ -30,7 +30,7 @@ type DiagnosticRecord struct {
 	MitigationApplied        string  `json:"mitigationApplied"` // Legado para retrocompatibilidade
 	MitigationHuman          string  `json:"mitigationHuman"`   // Legado para retrocompatibilidade
 	NeedsDestructiveRestart  float64 `json:"needsDestructiveRestart"`
-	DiagnosticConfidence     string  `json:"diagnosticConfidence"`
+	DiagnosticConfidence     string  `json:"diagnosticConfidence"` // Calibrado via Jev (ex: "100%", "85%") ou "N/A" / "UNKNOWN"
 	HumanSummary             string  `json:"humanSummary"`
 	Timestamp                string  `json:"timestamp"`
 }
@@ -78,10 +78,13 @@ func translateReasonToHuman(reason string) string {
 	if reason == "RESPOSTA_INCOMPLETA_JEV" || strings.Contains(reason, "RESPOSTA_INCOMPLETA") {
 		return "Resposta parcial ou campos essenciais ausentes no retorno do JEV"
 	}
+	if reason == "REGISTRO_LEGADO_ANTERIOR_AO_GATE04" {
+		return "Registro legado gerado antes da instrumentação detalhada do Gate 04"
+	}
 	return reason
 }
 
-// translateMitigationToHuman converte os tiers de mitigação para explicações claras
+// translateMitigationToHuman converte os tiers de mitigação sugeridos pelo JEV
 func translateMitigationToHuman(mitigation string) string {
 	switch mitigation {
 	case "TIER_1_SHED_LOAD":
@@ -91,7 +94,7 @@ func translateMitigationToHuman(mitigation string) string {
 	case "TIER_3_DEGRADE_GRACEFUL":
 		return "Degradação Graciosa: Consultas atendidas a partir do cache relacional imutável."
 	case "TIER_4_RESTART_LAST_RESORT":
-		return "Reinicialização de segurança executada como último recurso extremo."
+		return "Reinicialização de segurança recomendada como último recurso extremo."
 	case "NONE":
 		return "Nenhuma mitigação aplicável (diagnóstico indisponível)."
 	default:
@@ -99,7 +102,7 @@ func translateMitigationToHuman(mitigation string) string {
 	}
 }
 
-// translateDiagnosticToHuman converte os códigos matemáticos do Jev em explicações em bom português
+// translateDiagnosticToHuman converte categorias e scores do Jev em explicações técnicas calibradas
 func translateDiagnosticToHuman(category, mitigation string, restartProb float64) (string, string, string) {
 	causeHuman := ""
 	switch category {
@@ -121,23 +124,23 @@ func translateDiagnosticToHuman(category, mitigation string, restartProb float64
 
 	summary := ""
 	if restartProb < 0 {
-		summary = "⚠️ Diagnóstico indisponível: o sistema mantém proteção passiva sem reinício."
+		summary = "⚠️ Diagnóstico indisponível pelo JEV. Modo sombra mantém operação sem intervenção destrutiva."
 	} else if restartProb < 0.40 {
-		summary = fmt.Sprintf("✅ REINÍCIO VETADO PELO JEV (Risco de dano: %.0f%%). A falha é transitória e o restart apenas causaria queda de operadores.", (1.0-restartProb)*100.0)
+		summary = fmt.Sprintf("✅ REINÍCIO NÃO RECOMENDADO: Score de necessidade de reinício em %.1f%% (abaixo do limiar de 40%%). Operação normal mantida sem interrupção.", restartProb*100.0)
 	} else {
-		summary = fmt.Sprintf("⚠️ Reinício avaliado como provável necessidade (Probabilidade: %.0f%%).", restartProb*100.0)
+		summary = fmt.Sprintf("⚠️ REINÍCIO INDICADO PELO MODELO: Score de necessidade de reinício em %.1f%% (acima do limiar de 40%%). Modo sombra mantém apenas alerta em espera.", restartProb*100.0)
 	}
 
 	return causeHuman, mitigHuman, summary
 }
 
-// loadHistoricalDiagnostics restaura os últimos 50 eventos do SQLite na inicialização
+// loadHistoricalDiagnostics restaura os últimos 50 eventos do SQLite marcando registros legados com origem e disponibilidade desconhecidas
 func loadHistoricalDiagnostics() {
 	dbMutex.Lock()
 	defer dbMutex.Unlock()
 
 	rows, err := db.Query(`SELECT id, service_id, snapshot_id, root_cause, mitigation_applied, needs_restart_noul, confidence_level, diagnostics_payload_json, 
-		COALESCE(sample_origin, 'SIMULATION'), COALESCE(jev_source, 'typesafe_jev_api'), COALESCE(status, 'AVAILABLE'), 
+		COALESCE(sample_origin, ''), COALESCE(jev_source, ''), COALESCE(status, ''), 
 		COALESCE(unavailable_reason, ''), COALESCE(mitigation_suggested, ''), COALESCE(mitigation_executed, ''), strftime('%H:%M:%S', created_at)
 		FROM relational_diagnostics_events ORDER BY id DESC LIMIT 50`)
 	if err != nil {
@@ -159,28 +162,47 @@ func loadHistoricalDiagnostics() {
 		r.Timestamp = timeStr
 		label, _ := getHumanServiceLabel(r.ServiceID)
 		r.ServiceLabel = label
-		if r.SampleOrigin == "PROBE" {
-			r.SampleOriginHuman = "📡 Sonda Real"
+
+		// Identificação rigorosa de registros legados
+		isLegacy := (r.SampleOrigin == "" || r.Status == "" || r.JevSource == "")
+		if isLegacy {
+			r.SampleOrigin = "UNKNOWN"
+			r.SampleOriginHuman = "❓ Origem Desconhecida (Legado)"
+			r.Status = "UNKNOWN"
+			r.JevSource = "LEGACY_UNKNOWN"
+			if r.UnavailableReason == "" {
+				r.UnavailableReason = "REGISTRO_LEGADO_ANTERIOR_AO_GATE04"
+			}
+			r.DiagnosticConfidence = "UNKNOWN"
+			r.RootCauseHuman = fmt.Sprintf("Registro Legado: %s", r.RootCauseCategory)
+			r.MitigationSuggestedHuman = "Histórico legado sem recomendação desacoplada"
+			r.MitigationExecutedHuman = "Modo Sombra Passivo: Ação histórica registrada como " + r.MitigationApplied
+			r.HumanSummary = fmt.Sprintf("ℹ️ REGISTRO LEGADO: Telemetria anterior à instrumentação do Gate 04. Score de reinício: %.2f.", r.NeedsDestructiveRestart)
 		} else {
-			r.SampleOriginHuman = "🧪 Simulação"
+			if r.SampleOrigin == "PROBE" {
+				r.SampleOriginHuman = "📡 Sonda Real"
+			} else {
+				r.SampleOriginHuman = "🧪 Simulação"
+			}
+
+			if r.Status == "UNAVAILABLE" {
+				r.RootCauseHuman = fmt.Sprintf("⚠️ Diagnóstico Indisponível (%s)", translateReasonToHuman(r.UnavailableReason))
+				r.MitigationSuggestedHuman = "Nenhuma sugestão disponível"
+				r.MitigationExecutedHuman = "Modo Sombra Passivo: Sondagem de 1s contínua sem intervenção destrutiva no host"
+				r.HumanSummary = fmt.Sprintf("⚠️ DIAGNÓSTICO INDISPONÍVEL: %s", translateReasonToHuman(r.UnavailableReason))
+			} else {
+				causeHuman, _, summary := translateDiagnosticToHuman(r.RootCauseCategory, r.MitigationSuggested, r.NeedsDestructiveRestart)
+				r.RootCauseHuman = causeHuman
+				r.MitigationSuggestedHuman = translateMitigationToHuman(r.MitigationSuggested)
+				if r.NeedsDestructiveRestart < 0.40 {
+					r.MitigationExecutedHuman = "Modo Sombra Passivo: Reinício automático não acionado (despachante JEV em rate-limit de 60s; sondagem de 1s inalterada)"
+				} else {
+					r.MitigationExecutedHuman = "Modo Sombra Passivo: Alerta emitido ao operador (sondagem de 1s inalterada, sem reinício automático)"
+				}
+				r.HumanSummary = summary
+			}
 		}
 
-		if r.Status == "UNAVAILABLE" {
-			r.RootCauseHuman = fmt.Sprintf("⚠️ Diagnóstico Indisponível (%s)", translateReasonToHuman(r.UnavailableReason))
-			r.MitigationSuggestedHuman = "Nenhuma sugestão disponível"
-			r.MitigationExecutedHuman = "Executado: Cooldown passivo ativo (sem restart)"
-			r.HumanSummary = fmt.Sprintf("⚠️ DIAGNÓSTICO INDISPONÍVEL: %s", translateReasonToHuman(r.UnavailableReason))
-		} else {
-			causeHuman, _, summary := translateDiagnosticToHuman(r.RootCauseCategory, r.MitigationSuggested, r.NeedsDestructiveRestart)
-			r.RootCauseHuman = causeHuman
-			r.MitigationSuggestedHuman = translateMitigationToHuman(r.MitigationSuggested)
-			if r.NeedsDestructiveRestart < 0.40 {
-				r.MitigationExecutedHuman = "Executado: Reinício vetado pelo sistema imune (cooldown 60s)"
-			} else {
-				r.MitigationExecutedHuman = "Executado: Alerta em modo sombra emitido ao operador"
-			}
-			r.HumanSummary = summary
-		}
 		r.MitigationHuman = r.MitigationSuggestedHuman
 		records = append(records, r)
 	}
@@ -197,7 +219,7 @@ func dispatchGate04Diagnostics(rs RelationalState, snapshotID int64, shockLevel 
 		return
 	}
 
-	// Regra Argon: Cooldown de 60s por serviço para evitar tempestade de chamadas (API storm)
+	// Regra Argon: Cooldown de 60s por serviço no despachante JEV (a sondagem de rede no pingWorker continua de 1 em 1s)
 	lastDiagnostics.Lock()
 	lastTime, exists := lastDiagnostics.m[rs.ServiceID]
 	if exists && time.Since(lastTime) < 60*time.Second {
@@ -214,10 +236,10 @@ func dispatchGate04Diagnostics(rs RelationalState, snapshotID int64, shockLevel 
 			}
 		}()
 
-		// Identificação precisa da origem da amostra
+		// Identificação precisa da origem da amostra: preserva PROBE para falhas PUNITIVE_FALLBACK
 		sampleOrigin := "SIMULATION"
 		sampleOriginHuman := "🧪 Simulação"
-		if rs.EntropySource == "REAL_NETWORK" {
+		if rs.EntropySource == "REAL_NETWORK" || rs.EntropySource == "PUNITIVE_FALLBACK" || strings.HasPrefix(rs.ServiceID, "http://") || strings.HasPrefix(rs.ServiceID, "https://") {
 			sampleOrigin = "PROBE"
 			sampleOriginHuman = "📡 Sonda Real"
 		}
@@ -329,10 +351,11 @@ func dispatchGate04Diagnostics(rs RelationalState, snapshotID int64, shockLevel 
 			}
 		}
 
-		// Checar completude das respostas do JEV
+		// Checar completude das respostas do JEV e extrair confiança calibrada real
 		var rcObj, nrObj, mtObj map[string]interface{}
 		var rootCause, mitigationTier string
 		var needsRestart float64 = -1.0
+		confidenceLevel := "N/A"
 
 		if status == "AVAILABLE" {
 			var okRc, okNr, okMt bool
@@ -343,6 +366,7 @@ func dispatchGate04Diagnostics(rs RelationalState, snapshotID int64, shockLevel 
 			if !okRc || !okNr || !okMt {
 				status = "UNAVAILABLE"
 				unavailableReason = "RESPOSTA_INCOMPLETA_JEV (campos obrigatórios ausentes)"
+				confidenceLevel = "N/A"
 			} else {
 				if ch, ok := rcObj["choice"].(string); ok && ch != "" {
 					rootCause = ch
@@ -364,6 +388,15 @@ func dispatchGate04Diagnostics(rs RelationalState, snapshotID int64, shockLevel 
 					status = "UNAVAILABLE"
 					unavailableReason = "RESPOSTA_INCOMPLETA_JEV (campo mitigation_tier inválido)"
 				}
+
+				// Extrai a confiança real retornada pelo Jev System-One
+				if confVal, ok := rcObj["confidence"].(float64); ok {
+					confidenceLevel = fmt.Sprintf("%.0f%%", confVal*100.0)
+				} else if confStr, ok := rcObj["confidence"].(string); ok && confStr != "" {
+					confidenceLevel = confStr
+				} else {
+					confidenceLevel = "CALIBRATED"
+				}
 			}
 		}
 
@@ -375,19 +408,21 @@ func dispatchGate04Diagnostics(rs RelationalState, snapshotID int64, shockLevel 
 			causeHuman = fmt.Sprintf("⚠️ Diagnóstico Indisponível (%s)", translateReasonToHuman(unavailableReason))
 			mitigationSuggested = "NONE"
 			mitigationSuggestedHuman = "Nenhuma recomendação disponível pelo JEV"
-			mitigationExecuted = "DEFENSIVE_COOLDOWN"
-			mitigationExecutedHuman = "Executado: Cooldown defensivo ativo (modo passivo sem reinício cego)"
+			mitigationExecuted = "PASSIVE_SHADOW_MONITORING"
+			mitigationExecutedHuman = "Modo Sombra Passivo: Sondagem de 1s contínua sem intervenção destrutiva no host"
 			summary = fmt.Sprintf("⚠️ DIAGNÓSTICO INDISPONÍVEL: %s. Operando em regime de proteção passiva.", translateReasonToHuman(unavailableReason))
+			confidenceLevel = "N/A"
 		} else {
 			mitigationSuggested = mitigationTier
 			mitigationSuggestedHuman = translateMitigationToHuman(mitigationTier)
 
+			// Descrição rigorosamente alinhada ao comportamento real do host e do sentinela
 			if needsRestart < 0.40 {
-				mitigationExecuted = "VETO_RESTART_AND_PACE"
-				mitigationExecutedHuman = "Executado: Reinício vetado pelo sistema imune (cooldown 60s aplicado)"
+				mitigationExecuted = "PASSIVE_SHADOW_NO_RESTART"
+				mitigationExecutedHuman = "Modo Sombra Passivo: Reinício automático não acionado (despachante JEV em rate-limit de 60s; sondagem de 1s inalterada)"
 			} else {
-				mitigationExecuted = "ALERT_OPERATOR_SHADOW"
-				mitigationExecutedHuman = "Executado: Alerta emitido em modo sombra (sem reinício automático)"
+				mitigationExecuted = "SHADOW_ALERT_ONLY"
+				mitigationExecutedHuman = "Modo Sombra Passivo: Alerta emitido ao operador (sondagem de 1s inalterada, sem reinício automático)"
 			}
 
 			ch, _, sum := translateDiagnosticToHuman(rootCause, mitigationSuggested, needsRestart)
@@ -395,12 +430,12 @@ func dispatchGate04Diagnostics(rs RelationalState, snapshotID int64, shockLevel 
 			summary = sum
 		}
 
-		// Persiste no SQLite com rastreabilidade completa (Snapshot ID real, Origem da Amostra, Origem do Jev, Status)
+		// Persiste no SQLite com rastreabilidade completa e confiança real calibrada
 		dbMutex.Lock()
 		db.Exec(`INSERT INTO relational_diagnostics_events 
 			(service_id, snapshot_id, root_cause, mitigation_applied, needs_restart_noul, confidence_level, diagnostics_payload_json, sample_origin, jev_source, status, unavailable_reason, mitigation_suggested, mitigation_executed) 
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			rs.ServiceID, snapshotID, rootCause, mitigationSuggested, needsRestart, "HIGH", summary, sampleOrigin, jevSource, status, unavailableReason, mitigationSuggested, mitigationExecuted)
+			rs.ServiceID, snapshotID, rootCause, mitigationSuggested, needsRestart, confidenceLevel, summary, sampleOrigin, jevSource, status, unavailableReason, mitigationSuggested, mitigationExecuted)
 		dbMutex.Unlock()
 
 		// Mantém histórico em memória para o endpoint HTTP da UI
@@ -423,7 +458,7 @@ func dispatchGate04Diagnostics(rs RelationalState, snapshotID int64, shockLevel 
 			MitigationApplied:        mitigationSuggested,
 			MitigationHuman:          mitigationSuggestedHuman,
 			NeedsDestructiveRestart:  needsRestart,
-			DiagnosticConfidence:     "HIGH",
+			DiagnosticConfidence:     confidenceLevel,
 			HumanSummary:             summary,
 			Timestamp:                time.Now().Format("15:04:05"),
 		}
@@ -435,7 +470,7 @@ func dispatchGate04Diagnostics(rs RelationalState, snapshotID int64, shockLevel 
 		}
 		cachedDiagnostics.Unlock()
 
-		log.Printf("Gate 04 [JEV]: Snapshot=#%d (%s) | Serviço=%s | Status=%s | Origem=%s | Causa=%s | Sugerida=%s | Executada=%s",
-			snapshotID, sampleOrigin, rs.ServiceID, status, jevSource, rootCause, mitigationSuggested, mitigationExecuted)
+		log.Printf("Gate 04 [JEV]: Snapshot=#%d (%s) | Serviço=%s | Status=%s | Conf=%s | Causa=%s | Sugerida=%s | Executada=%s",
+			snapshotID, sampleOrigin, rs.ServiceID, status, confidenceLevel, rootCause, mitigationSuggested, mitigationExecuted)
 	}()
 }
